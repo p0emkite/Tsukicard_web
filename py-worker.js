@@ -32,6 +32,8 @@ async function ensureReady() {
     await pyodide.loadPackage("Pillow");
     ensureDir(APP_ROOT);
     ensureDir("/tmp");
+    await fetchWrite("render_helpers.py", false);
+    await fetchWrite("render_card.py", false);
     await fetchWrite("engine.py", false);
     await pyodide.runPythonAsync(`
 import sys, json, io, base64
