@@ -483,8 +483,15 @@ async function prepareBatch() {
     const data = await excel.arrayBuffer();
     const wb = XLSX.read(data, { type: "array", raw: false });
     const sheetName = wb.SheetNames.includes("입력") ? "입력" : wb.SheetNames[0];
-    const rows = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { defval: "", raw: false });
-    batchRows = rows.filter(row => String(row["이름"] || "").trim() || String(row["이미지명"] || "").trim()).map((row, i) => ({ index: i + 2, row, state: "ready", message: "" }));
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], {
+      defval: "",
+      raw: false,
+      range: 2,
+      header: ["시즌", "등급", "구단", "등번호", "이름", "포지션", "이미지명", "저장파일명"],
+    });
+    batchRows = rows
+      .filter(row => String(row["이름"] || "").trim() || String(row["이미지명"] || "").trim())
+      .map((row, i) => ({ index: i + 3, row, state: "ready", message: "" }));
     if (!batchRows.length) throw new Error("생성할 데이터 행이 없습니다.");
     renderBatchTable();
     $("batchBtn").disabled = false;
