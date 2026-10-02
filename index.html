@@ -36,7 +36,6 @@
         <div class="field"><label for="templateSelect">등급</label><select id="templateSelect"></select></div>
         <div class="field"><label for="teamSelect">구단</label><select id="teamSelect"></select></div>
         <div class="field"><label for="seasonInput">시즌</label><input id="seasonInput" type="text" /></div>
-        <div class="field"><label for="numberInput">등번호</label><input id="numberInput" type="text" inputmode="numeric" /></div>
         <div class="field"><label for="nameInput">이름</label><input id="nameInput" type="text" /></div>
         <div class="field"><label for="positionInput">포지션</label><input id="positionInput" type="text" /></div>
       </div>
@@ -107,7 +106,7 @@
         <div id="emptyPreview" class="empty-preview">피사체 이미지를 선택하면<br />여기에 카드가 표시됩니다.</div>
       </div>
       <p class="preview-help">미리보기 위에서 <b>드래그</b>: 위치 이동 · <b>마우스 휠</b>: 확대/축소</p>
-      <div class="save-box"><label for="filenameInput">저장 파일명</label><div class="file-row"><input id="filenameInput" type="text" value="28_츠키_오팔.png" /><button id="generateBtn" class="primary" type="button" disabled>PNG 생성·다운로드</button></div></div>
+      <div class="save-box"><label for="filenameInput">저장 파일명</label><div class="file-row"><input id="filenameInput" type="text" value="츠키_오팔.png" /><button id="generateBtn" class="primary" type="button" disabled>PNG 생성·다운로드</button></div></div>
       <div id="status" class="status">웹 제작기를 준비하고 있습니다.</div>
     </section>
   </main>
@@ -115,7 +114,7 @@
   <section class="batch-wrap">
     <div class="panel batch-panel">
       <div class="batch-head">
-        <div><h2>Excel 일괄 생성</h2><p>양식 형식: 시즌 · 등급 · 구단 · 등번호 · 이름 · 포지션 · 이미지명 · 저장파일명</p></div>
+        <div><h2>Excel 일괄 생성</h2><p>양식 형식: 시즌 · 등급 · 구단 · 이름 · 포지션 · 이미지명 · 저장파일명</p></div>
         <a class="button-link" href="./samples/츠키카드_일괄생성_양식.xlsx" download>일괄 생성 엑셀 양식 다운로드</a>
       </div>
       <div class="batch-inputs"><div class="field"><label for="excelInput">Excel 파일</label><input id="excelInput" type="file" accept=".xlsx,.xls" /></div><div class="field"><label for="imageFolderInput">이미지 폴더</label><input id="imageFolderInput" type="file" accept="image/*" multiple webkitdirectory directory /></div></div>
