@@ -1,0 +1,76 @@
+{
+  "id": "05_TB_V1",
+  "display_name": "TB",
+  "mode": "stack",
+  "native_canvas": {
+    "width": 800,
+    "height": 1200
+  },
+  "default_size": "800 × 1200",
+  "background": "assets/backgrounds/TB_background.png",
+  "overlay": "assets/frames/TB_frame.png",
+  "subject_box": {
+    "x": 60,
+    "y": 72,
+    "width": 700,
+    "height": 850
+  },
+  "top_right_text": {
+    "anchor": "ne",
+    "x": 778,
+    "y": 42,
+    "font_size": 28,
+    "color": "#00B03A"
+  },
+  "name_text": {
+    "anchor": "mm",
+    "x": 405,
+    "y": 973,
+    "font_size": 48,
+    "color": "#FFFFFF",
+    "stroke_fill": "#8F8AA8",
+    "stroke_width": 2
+  },
+  "position_text": {
+    "anchor": "mm",
+    "x": 680,
+    "y": 980,
+    "font_size": 60,
+    "color": "#FFFFFF",
+    "stroke_fill": "#8F8AA8",
+    "stroke_width": 2
+  },
+  "team_logos": {
+    "한화 이글스": "assets/team_logos/Hanwha_Eagles.png",
+    "롯데 자이언츠": "assets/team_logos/Lotte_Giants.png",
+    "두산 베어스": "assets/team_logos/Doosan_Bears.png",
+    "SSG 랜더스": "assets/team_logos/SSG_Landers.png",
+    "LG 트윈스": "assets/team_logos/LG_Twins.png",
+    "삼성 라이온즈": "assets/team_logos/Samsung_Lions.png",
+    "KIA 타이거즈": "assets/team_logos/KIA_Tigers.png",
+    "NC 다이노스": "assets/team_logos/NC_Dinos.png"
+  },
+  "category": "츠키카드",
+  "gradient_profile": {
+    "direction": "vertical",
+    "stops": [
+      {
+        "color": "#70048F",
+        "position": 20
+      },
+      {
+        "color": "#C00101",
+        "position": 78
+      }
+    ],
+    "name": {
+      "outer_stroke_default": 3,
+      "inner_stroke_width": 1,
+      "inner_stroke_color": "#000000",
+      "inner_stroke_opacity": 128
+    },
+    "position": {
+      "mode": "fill_gradient"
+    }
+  }
+}
