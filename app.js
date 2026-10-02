@@ -1,0 +1,621 @@
+const $ = (id) => document.getElementById(id);
+const ORDER = ["오팔", "코랄", "골드", "실버", "TB", "올스타", "설날"];
+const STORAGE_KEY = "tsuki-card-web-defaults-v1";
+const FONT_PATHS = [
+  "assets/fonts/VITRO_INSPIRE.otf",
+  "assets/fonts/Freesentation-8ExtraBold.ttf",
+];
+const runtimeBadge = $("runtimeBadge");
+const statusBox = $("status");
+const batchStatus = $("batchStatus");
+const worker = new Worker(new URL("./py-worker.js", import.meta.url), { type: "module" });
+let workerSeq = 1;
+const workerPending = new Map();
+let templates = new Map();
+let staticDefaults = null;
+let currentOriginalFile = null;
+let currentWorkingBlob = null;
+let currentPreviewUrl = null;
+let renderTimer = null;
+let renderInFlight = false;
+let renderAgain = false;
+let runtimeReady = false;
+let dragState = null;
+let batchRows = [];
+let batchImageFiles = [];
+let cutoutModule = null;
+
+worker.onmessage = (event) => {
+  const { id, ok, data, error } = event.data || {};
+  const pending = workerPending.get(id);
+  if (!pending) return;
+  workerPending.delete(id);
+  ok ? pending.resolve(data) : pending.reject(new Error(error || "Worker error"));
+};
+worker.onerror = (event) => {
+  runtimeBadge.textContent = "Python 오류";
+  runtimeBadge.className = "badge error";
+  setStatus(`Python 실행 오류: ${event.message}`, true);
+};
+
+function callWorker(type, payload = {}, transfer = []) {
+  return new Promise((resolve, reject) => {
+    const id = workerSeq++;
+    workerPending.set(id, { resolve, reject });
+    worker.postMessage({ id, type, payload }, transfer);
+  });
+}
+
+function setStatus(message, isError = false, ok = false) {
+  statusBox.textContent = message;
+  statusBox.className = `status${isError ? " error" : ok ? " ok" : ""}`;
+}
+function setBatchStatus(message, isError = false, ok = false) {
+  batchStatus.textContent = message;
+  batchStatus.className = `status compact-status${isError ? " error" : ok ? " ok" : ""}`;
+}
+
+function clamp(value, min, max) { return Math.max(min, Math.min(max, value)); }
+function sanitizeFilename(name, fallback = "card.png") {
+  let out = (name || "").trim() || fallback;
+  out = out.replace(/[<>:"/\\|?*\x00-\x1F]/g, "_").replace(/[ .]+$/g, "");
+  if (!out.toLowerCase().endsWith(".png")) out += ".png";
+  return out || fallback;
+}
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>'"]/g, ch => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[ch]));
+}
+function base64ToBlob(base64, type = "image/png") {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return new Blob([bytes], { type });
+}
+function base64ToUint8(base64) {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+async function loadJson(path) {
+  const res = await fetch(path);
+  if (!res.ok) throw new Error(`${path} 로드 실패 (${res.status})`);
+  return res.json();
+}
+
+async function loadTemplates() {
+  const files = ["OPAL_V1.json", "CORAL_V1.json", "GOLD_V1.json", "SILVER_V1.json", "TB_V1.json", "ALLSTAR_V1.json", "SEOLLAL_V1.json"];
+  const list = await Promise.all(files.map(file => loadJson(`./templates/${file}`)));
+  list.forEach(t => templates.set(t.display_name, t));
+  const select = $("templateSelect");
+  select.innerHTML = ORDER.filter(name => templates.has(name)).map(name => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join("");
+}
+
+function inputValue(id, fallback = "") { return $(id).value === "" ? fallback : $(id).value; }
+function numValue(id, fallback = 0) {
+  const n = Number($(id).value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function currentTemplate() { return templates.get($("templateSelect").value); }
+function composedName() {
+  const number = $("numberInput").value.trim();
+  const name = $("nameInput").value.trim();
+  return number ? `${number}. ${name}`.trim() : name;
+}
+function filenameFromCurrent() {
+  const number = $("numberInput").value.trim();
+  const name = $("nameInput").value.trim() || "card";
+  const grade = $("templateSelect").value || "card";
+  return sanitizeFilename([number, name, grade].filter(Boolean).join("_"));
+}
+
+function styleFromTemplate(resetAll = false) {
+  const tpl = currentTemplate();
+  if (!tpl) return;
+  const h = tpl.top_right_text || {};
+  const n = tpl.name_text || {};
+  const p = tpl.position_text || {};
+  if (resetAll || !$("headerSize").value) $("headerSize").value = h.font_size ?? 28;
+  if (resetAll || !$("headerX").value) $("headerX").value = h.x ?? 778;
+  if (resetAll || !$("headerY").value) $("headerY").value = h.y ?? 42;
+  if (resetAll || !$("headerColor").value) $("headerColor").value = h.color ?? "#00B03A";
+  if (resetAll || !$("nameSize").value) $("nameSize").value = n.font_size ?? 48;
+  if (resetAll || !$("nameX").value) $("nameX").value = n.x ?? 405;
+  if (resetAll || !$("nameY").value) $("nameY").value = n.y ?? 973;
+  if (resetAll || !$("nameColor").value) $("nameColor").value = n.color ?? "#FFFFFF";
+  if (resetAll || !$("nameOutline").value) $("nameOutline").value = tpl.gradient_profile?.name?.outer_stroke_default ?? 3;
+  if (resetAll || !$("positionSize").value) $("positionSize").value = p.font_size ?? 60;
+  if (resetAll || !$("positionX").value) $("positionX").value = p.x ?? 680;
+  if (resetAll || !$("positionY").value) $("positionY").value = p.y ?? 980;
+  if (resetAll || !$("positionColor").value) $("positionColor").value = p.color ?? "#FFFFFF";
+}
+
+function populateTeams(preferred = null) {
+  const tpl = currentTemplate();
+  const names = Object.keys(tpl?.team_logos || {});
+  const select = $("teamSelect");
+  const old = preferred ?? select.value;
+  select.innerHTML = `<option value="">로고 없음</option>` + names.map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join("");
+  if (names.includes(old)) select.value = old;
+  else if (names.includes(staticDefaults?.team_name)) select.value = staticDefaults.team_name;
+  else select.value = names[0] || "";
+}
+
+function collectControls() {
+  const tpl = currentTemplate();
+  return {
+    grade: $("templateSelect").value,
+    team_name: $("teamSelect").value,
+    season: $("seasonInput").value,
+    number: $("numberInput").value,
+    name: $("nameInput").value,
+    position: $("positionInput").value,
+    focus_x: numValue("focusXNumber", 50),
+    focus_y: numValue("focusYNumber", 50),
+    zoom: numValue("zoomNumber", 100),
+    subject_glow: $("glowCheck").checked,
+    top_right_size: numValue("headerSize", tpl?.top_right_text?.font_size || 28),
+    top_right_x: numValue("headerX", tpl?.top_right_text?.x || 778),
+    top_right_y: numValue("headerY", tpl?.top_right_text?.y || 42),
+    top_right_color: $("headerColor").value || "#00B03A",
+    name_size: numValue("nameSize", tpl?.name_text?.font_size || 48),
+    name_x: numValue("nameX", tpl?.name_text?.x || 405),
+    name_y: numValue("nameY", tpl?.name_text?.y || 973),
+    name_color: $("nameColor").value || "#FFFFFF",
+    position_size: numValue("positionSize", tpl?.position_text?.font_size || 60),
+    position_x: numValue("positionX", tpl?.position_text?.x || 680),
+    position_y: numValue("positionY", tpl?.position_text?.y || 980),
+    position_color: $("positionColor").value || "#FFFFFF",
+    name_outline_width: numValue("nameOutline", 3),
+  };
+}
+
+function applyControls(data) {
+  if (!data) return;
+  if (data.grade && templates.has(data.grade)) $("templateSelect").value = data.grade;
+  populateTeams(data.team_name);
+  const map = {
+    season: "seasonInput", number: "numberInput", name: "nameInput", position: "positionInput",
+    top_right_size: "headerSize", top_right_x: "headerX", top_right_y: "headerY", top_right_color: "headerColor",
+    name_size: "nameSize", name_x: "nameX", name_y: "nameY", name_color: "nameColor", name_outline_width: "nameOutline",
+    position_size: "positionSize", position_x: "positionX", position_y: "positionY", position_color: "positionColor",
+  };
+  for (const [key, id] of Object.entries(map)) if (data[key] !== undefined && data[key] !== null) $(id).value = data[key];
+  setLinkedRange("focusX", data.focus_x ?? 50);
+  setLinkedRange("focusY", data.focus_y ?? 50);
+  setLinkedRange("zoom", data.zoom ?? 100);
+  $("glowCheck").checked = data.subject_glow ?? true;
+  $("filenameInput").value = filenameFromCurrent();
+}
+
+function paramsForRender(overrides = {}) {
+  const c = collectControls();
+  const tpl = currentTemplate();
+  const team = overrides.team_name ?? c.team_name;
+  const season = overrides.season ?? c.season;
+  const displayName = overrides.display_name ?? composedName();
+  const position = overrides.position ?? c.position;
+  return {
+    name: displayName,
+    element_color: "#FFFFFF",
+    text_color: "#FFFFFF",
+    focus_x: (overrides.focus_x ?? c.focus_x) / 100,
+    focus_y: (overrides.focus_y ?? c.focus_y) / 100,
+    zoom: (overrides.zoom ?? c.zoom) / 100,
+    font_override: null,
+    extra: {
+      team_name: team,
+      top_right_text: season,
+      top_right_size: overrides.top_right_size ?? c.top_right_size,
+      top_right_x: overrides.top_right_x ?? c.top_right_x,
+      top_right_y: overrides.top_right_y ?? c.top_right_y,
+      top_right_color: overrides.top_right_color ?? c.top_right_color,
+      name_text: displayName,
+      name_size: overrides.name_size ?? c.name_size,
+      name_x: overrides.name_x ?? c.name_x,
+      name_y: overrides.name_y ?? c.name_y,
+      name_color: overrides.name_color ?? c.name_color,
+      position_text: position,
+      position_size: overrides.position_size ?? c.position_size,
+      position_x: overrides.position_x ?? c.position_x,
+      position_y: overrides.position_y ?? c.position_y,
+      position_color: overrides.position_color ?? c.position_color,
+      name_outline_width: overrides.name_outline_width ?? c.name_outline_width,
+      gradient_profile: tpl?.gradient_profile || {},
+      header_font_path: "/home/pyodide/app/assets/fonts/VITRO_INSPIRE.otf",
+      name_font_path: "/home/pyodide/app/assets/fonts/VITRO_INSPIRE.otf",
+      position_font_path: "/home/pyodide/app/assets/fonts/Freesentation-8ExtraBold.ttf",
+      subject_glow: overrides.subject_glow ?? c.subject_glow,
+    },
+  };
+}
+
+function assetsFor(template, teamName = "") {
+  const paths = [template.background, template.overlay, ...FONT_PATHS];
+  const logo = template.team_logos?.[teamName];
+  if (logo) paths.push(logo);
+  return [...new Set(paths.filter(Boolean))];
+}
+
+async function setWorkingPhoto(blob, label = "이미지") {
+  const buffer = await blob.arrayBuffer();
+  await callWorker("setPhoto", { buffer }, [buffer]);
+  currentWorkingBlob = blob;
+  $("cutoutBtn").disabled = false;
+  $("restorePhotoBtn").disabled = !currentOriginalFile || blob === currentOriginalFile;
+  $("generateBtn").disabled = false;
+  $("previewHint").textContent = label;
+  scheduleRender(true);
+}
+
+async function renderCurrent(width = 400, height = 600) {
+  if (!currentWorkingBlob) return null;
+  const template = currentTemplate();
+  const params = paramsForRender();
+  await callWorker("ensureAssets", { paths: assetsFor(template, params.extra.team_name) });
+  return callWorker("render", { template, params, width, height });
+}
+
+function scheduleRender(immediate = false) {
+  if (!runtimeReady || !currentWorkingBlob) return;
+  clearTimeout(renderTimer);
+  renderTimer = setTimeout(runPreviewRender, immediate ? 0 : 160);
+}
+
+async function runPreviewRender() {
+  if (renderInFlight) { renderAgain = true; return; }
+  renderInFlight = true;
+  try {
+    setStatus("미리보기를 생성하고 있습니다.");
+    const result = await renderCurrent(400, 600);
+    const blob = base64ToBlob(result.base64);
+    if (currentPreviewUrl) URL.revokeObjectURL(currentPreviewUrl);
+    currentPreviewUrl = URL.createObjectURL(blob);
+    $("previewImage").src = currentPreviewUrl;
+    $("previewStage").classList.add("has-image");
+    setStatus("미리보기 완료. 드래그로 위치를 이동하고 휠로 확대/축소할 수 있습니다.", false, true);
+  } catch (error) {
+    console.error(error);
+    setStatus(`미리보기 생성 실패: ${error.message}`, true);
+  } finally {
+    renderInFlight = false;
+    if (renderAgain) { renderAgain = false; scheduleRender(true); }
+  }
+}
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+async function generateAndDownload() {
+  if (!currentWorkingBlob) return;
+  const btn = $("generateBtn");
+  btn.disabled = true;
+  try {
+    setStatus("800 × 1200 PNG를 생성하고 있습니다.");
+    const template = currentTemplate();
+    const params = paramsForRender();
+    await callWorker("ensureAssets", { paths: assetsFor(template, params.extra.team_name) });
+    const result = await callWorker("render", { template, params, width: 800, height: 1200 });
+    downloadBlob(base64ToBlob(result.base64), sanitizeFilename($("filenameInput").value, filenameFromCurrent()));
+    setStatus("PNG 생성이 완료되었습니다.", false, true);
+  } catch (error) {
+    setStatus(`PNG 생성 실패: ${error.message}`, true);
+  } finally { btn.disabled = false; }
+}
+
+function setLinkedRange(prefix, value) {
+  const range = $(`${prefix}Range`);
+  const number = $(`${prefix}Number`);
+  if (range) range.value = value;
+  if (number) number.value = value;
+}
+function bindRange(prefix, min, max) {
+  const range = $(`${prefix}Range`);
+  const number = $(`${prefix}Number`);
+  const sync = (from, to) => {
+    const value = clamp(Number(from.value || 0), min, max);
+    to.value = value;
+    scheduleRender();
+  };
+  range.addEventListener("input", () => sync(range, number));
+  number.addEventListener("input", () => sync(number, range));
+}
+
+function updateGuides() {
+  $("centerGuide").style.display = $("centerGuideCheck").checked ? "block" : "none";
+  $("faceGuide").style.display = $("faceGuideCheck").checked ? "block" : "none";
+  const scale = Number($("faceGuideRange").value || 100) / 100;
+  $("faceGuide").style.width = `${28 * scale}%`;
+  $("faceGuideValue").value = `${Math.round(scale * 100)}%`;
+}
+
+function bindPreviewGestures() {
+  const stage = $("previewStage");
+  stage.addEventListener("pointerdown", (e) => {
+    if (!currentWorkingBlob) return;
+    stage.setPointerCapture(e.pointerId);
+    dragState = { x: e.clientX, y: e.clientY };
+    stage.classList.add("dragging");
+  });
+  stage.addEventListener("pointermove", (e) => {
+    if (!dragState) return;
+    const rect = stage.getBoundingClientRect();
+    const dx = e.clientX - dragState.x;
+    const dy = e.clientY - dragState.y;
+    const nx = clamp(numValue("focusXNumber", 50) - dx * 100 / Math.max(1, rect.width), -1000, 1000);
+    const ny = clamp(numValue("focusYNumber", 50) - dy * 100 / Math.max(1, rect.height), -1000, 1000);
+    setLinkedRange("focusX", nx.toFixed(1));
+    setLinkedRange("focusY", ny.toFixed(1));
+    dragState = { x: e.clientX, y: e.clientY };
+    scheduleRender();
+  });
+  const end = () => { dragState = null; stage.classList.remove("dragging"); };
+  stage.addEventListener("pointerup", end);
+  stage.addEventListener("pointercancel", end);
+  stage.addEventListener("wheel", (e) => {
+    if (!currentWorkingBlob) return;
+    e.preventDefault();
+    const direction = e.deltaY < 0 ? 1 : -1;
+    const next = clamp(numValue("zoomNumber", 100) + direction * 3, 40, 500);
+    setLinkedRange("zoom", next);
+    scheduleRender();
+  }, { passive: false });
+}
+
+async function doCutout() {
+  if (!currentWorkingBlob) return;
+  const btn = $("cutoutBtn");
+  btn.disabled = true;
+  try {
+    setStatus("AI 누끼 모델을 준비하고 있습니다. 최초 실행은 다운로드 때문에 오래 걸릴 수 있습니다.");
+    if (!cutoutModule) cutoutModule = await import("https://esm.sh/@imgly/background-removal@1.5.6");
+    const out = await cutoutModule.removeBackground(currentWorkingBlob, {
+      model: "isnet",
+      output: { format: "image/png", quality: 1 },
+      progress: (key, current, total) => setStatus(`AI 누끼 처리 중: ${key} ${Math.round((current / Math.max(1, total)) * 100)}%`),
+    });
+    await setWorkingPhoto(out, "AI 누끼 적용됨");
+    $("restorePhotoBtn").disabled = false;
+    setStatus("AI 누끼를 적용했습니다.", false, true);
+  } catch (error) {
+    console.error(error);
+    setStatus(`AI 누끼 실패: ${error.message}. PNG 투명 배경 이미지를 직접 넣어도 됩니다.`, true);
+  } finally { btn.disabled = false; }
+}
+
+function saveDefaults() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(collectControls()));
+  setStatus("현재 설정을 이 브라우저의 기본값으로 저장했습니다.", false, true);
+}
+function resetDefaults() {
+  localStorage.removeItem(STORAGE_KEY);
+  applyControls({
+    grade: "오팔",
+    team_name: staticDefaults.team_name,
+    season: staticDefaults.top_right_text,
+    number: "28",
+    name: "츠키",
+    position: staticDefaults.position_text,
+    focus_x: 50, focus_y: 50, zoom: 100, subject_glow: true,
+    ...staticDefaults,
+  });
+  setStatus("저장된 사용자 기본값을 지우고 프로그램 기본값으로 되돌렸습니다.", false, true);
+  scheduleRender();
+}
+
+function maybeUpdateFilename() { $("filenameInput").value = filenameFromCurrent(); }
+
+function bindInputs() {
+  bindRange("focusX", -1000, 1000);
+  bindRange("focusY", -1000, 1000);
+  bindRange("zoom", 40, 500);
+  bindPreviewGestures();
+
+  $("templateSelect").addEventListener("change", () => {
+    populateTeams();
+    styleFromTemplate(true);
+    maybeUpdateFilename();
+    scheduleRender();
+  });
+  $("teamSelect").addEventListener("change", scheduleRender);
+  ["seasonInput","numberInput","nameInput","positionInput","headerSize","headerX","headerY","headerColor","nameSize","nameX","nameY","nameColor","nameOutline","positionSize","positionX","positionY","positionColor","glowCheck"].forEach(id => {
+    $(id).addEventListener("input", () => {
+      if (id === "numberInput" || id === "nameInput") maybeUpdateFilename();
+      scheduleRender();
+    });
+    $(id).addEventListener("change", scheduleRender);
+  });
+
+  $("photoInput").addEventListener("change", async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    currentOriginalFile = file;
+    await setWorkingPhoto(file, file.name);
+    $("restorePhotoBtn").disabled = true;
+  });
+  $("restorePhotoBtn").addEventListener("click", async () => {
+    if (!currentOriginalFile) return;
+    await setWorkingPhoto(currentOriginalFile, `${currentOriginalFile.name} (원본)`);
+    $("restorePhotoBtn").disabled = true;
+  });
+  $("cutoutBtn").addEventListener("click", doCutout);
+  $("generateBtn").addEventListener("click", generateAndDownload);
+  $("resetCropBtn").addEventListener("click", () => { setLinkedRange("focusX", 50); setLinkedRange("focusY", 50); setLinkedRange("zoom", 100); scheduleRender(); });
+  $("resetTextBtn").addEventListener("click", () => { styleFromTemplate(true); scheduleRender(); });
+  $("saveDefaultsBtn").addEventListener("click", saveDefaults);
+  $("resetDefaultsBtn").addEventListener("click", resetDefaults);
+  ["centerGuideCheck","faceGuideCheck","faceGuideRange"].forEach(id => $(id).addEventListener("input", updateGuides));
+  updateGuides();
+  $("excelInput").addEventListener("change", prepareBatch);
+  $("imageFolderInput").addEventListener("change", prepareBatch);
+  $("batchBtn").addEventListener("click", runBatch);
+}
+
+function ensureSheetJs() {
+  if (!window.XLSX) throw new Error("Excel 라이브러리가 아직 로드되지 않았습니다. 인터넷 연결을 확인하세요.");
+}
+function ensureJsZip() {
+  if (!window.JSZip) throw new Error("ZIP 라이브러리가 아직 로드되지 않았습니다. 인터넷 연결을 확인하세요.");
+}
+
+async function prepareBatch() {
+  const excel = $("excelInput").files?.[0];
+  batchImageFiles = [...($("imageFolderInput").files || [])];
+  $("batchBtn").disabled = true;
+  batchRows = [];
+  $("batchTableWrap").innerHTML = "";
+  if (!excel || batchImageFiles.length === 0) {
+    setBatchStatus("Excel과 이미지 폴더를 모두 선택하세요.");
+    return;
+  }
+  try {
+    ensureSheetJs();
+    const data = await excel.arrayBuffer();
+    const wb = XLSX.read(data, { type: "array", raw: false });
+    const sheetName = wb.SheetNames.includes("입력") ? "입력" : wb.SheetNames[0];
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { defval: "", raw: false });
+    batchRows = rows.filter(row => String(row["이름"] || "").trim() || String(row["이미지명"] || "").trim()).map((row, i) => ({ index: i + 2, row, state: "ready", message: "" }));
+    if (!batchRows.length) throw new Error("생성할 데이터 행이 없습니다.");
+    renderBatchTable();
+    $("batchBtn").disabled = false;
+    setBatchStatus(`${batchRows.length}개 행을 읽었습니다. 이미지 폴더 ${batchImageFiles.length}개 파일을 사용합니다.`, false, true);
+  } catch (error) {
+    setBatchStatus(`Excel 읽기 실패: ${error.message}`, true);
+  }
+}
+
+function renderBatchTable() {
+  const html = `<table class="batch-table"><thead><tr><th>행</th><th>시즌</th><th>등급</th><th>구단</th><th>등번호</th><th>이름</th><th>포지션</th><th>이미지</th><th>상태</th></tr></thead><tbody>` +
+    batchRows.map(item => {
+      const r = item.row;
+      return `<tr class="${item.state === "done" ? "done" : item.state === "error" ? "error" : ""}">
+        <td>${item.index}</td><td>${escapeHtml(r["시즌"])}</td><td>${escapeHtml(r["등급"])}</td><td>${escapeHtml(r["구단"])}</td><td>${escapeHtml(r["등번호"])}</td><td>${escapeHtml(r["이름"])}</td><td>${escapeHtml(r["포지션"])}</td><td>${escapeHtml(r["이미지명"])}</td><td>${escapeHtml(item.message || item.state)}</td>
+      </tr>`;
+    }).join("") + `</tbody></table>`;
+  $("batchTableWrap").innerHTML = html;
+}
+
+function normalizePath(s) { return String(s || "").replaceAll("\\", "/").replace(/^\.\//, "").toLowerCase(); }
+function findBatchImage(name) {
+  const wanted = normalizePath(name);
+  if (!wanted) return null;
+  const exact = batchImageFiles.filter(f => normalizePath(f.webkitRelativePath || f.name).endsWith(wanted));
+  if (exact.length === 1) return exact[0];
+  const base = wanted.split("/").pop();
+  const byBase = batchImageFiles.filter(f => f.name.toLowerCase() === base);
+  return byBase.length === 1 ? byBase[0] : null;
+}
+
+async function runBatch() {
+  if (!batchRows.length) return;
+  const btn = $("batchBtn");
+  btn.disabled = true;
+  try {
+    ensureJsZip();
+    const zip = new JSZip();
+    let done = 0;
+    let failed = 0;
+    for (let i = 0; i < batchRows.length; i++) {
+      const item = batchRows[i];
+      const r = item.row;
+      try {
+        setBatchStatus(`${i + 1} / ${batchRows.length} 생성 중 · ${r["이름"] || ""}`);
+        const grade = String(r["등급"] || $("templateSelect").value).trim();
+        const tpl = templates.get(grade);
+        if (!tpl) throw new Error(`등록되지 않은 등급: ${grade}`);
+        const image = findBatchImage(r["이미지명"]);
+        if (!image) throw new Error(`이미지를 찾을 수 없음: ${r["이미지명"]}`);
+        const number = String(r["등번호"] ?? "").trim().replace(/\.0+$/, "");
+        const name = String(r["이름"] || "").trim();
+        if (!name) throw new Error("이름이 비어 있음");
+        const team = String(r["구단"] || "").trim();
+        if (team && !tpl.team_logos?.[team]) throw new Error(`등록되지 않은 구단: ${team}`);
+        const displayName = number ? `${number}. ${name}` : name;
+        const buffer = await image.arrayBuffer();
+        await callWorker("setPhoto", { buffer }, [buffer]);
+        const current = collectControls();
+        const params = paramsForRender({
+          team_name: team,
+          season: String(r["시즌"] || "").trim(),
+          display_name: displayName,
+          position: String(r["포지션"] || "").trim(),
+          focus_x: current.focus_x,
+          focus_y: current.focus_y,
+          zoom: current.zoom,
+        });
+        params.extra.gradient_profile = tpl.gradient_profile || {};
+        await callWorker("ensureAssets", { paths: assetsFor(tpl, team) });
+        const result = await callWorker("render", { template: tpl, params, width: 800, height: 1200 });
+        const fallback = [number, name, grade].filter(Boolean).join("_") + ".png";
+        const filename = sanitizeFilename(String(r["저장파일명"] || "").trim(), fallback);
+        zip.file(filename, base64ToUint8(result.base64));
+        item.state = "done";
+        item.message = "완료";
+        done++;
+      } catch (error) {
+        item.state = "error";
+        item.message = error.message;
+        failed++;
+      }
+      renderBatchTable();
+    }
+    if (!done) throw new Error("성공한 카드가 없습니다.");
+    const out = await zip.generateAsync({ type: "blob", compression: "DEFLATE", compressionOptions: { level: 6 } });
+    downloadBlob(out, `츠키카드_일괄생성_${new Date().toISOString().slice(0,10)}.zip`);
+    setBatchStatus(`완료: ${done}개 성공${failed ? ` · ${failed}개 실패` : ""}. ZIP을 다운로드했습니다.`, failed > 0, failed === 0);
+  } catch (error) {
+    setBatchStatus(`일괄 생성 실패: ${error.message}`, true);
+  } finally {
+    btn.disabled = false;
+    if (currentWorkingBlob) {
+      try { await setWorkingPhoto(currentWorkingBlob, $("previewHint").textContent); } catch (_) {}
+    }
+  }
+}
+
+async function init() {
+  try {
+    setStatus("템플릿과 Python 실행 환경을 준비하고 있습니다.");
+    await loadTemplates();
+    staticDefaults = await loadJson("./config/baseball_defaults.json");
+    styleFromTemplate(true);
+    populateTeams(staticDefaults.team_name);
+    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null");
+    applyControls(saved || {
+      grade: "오팔",
+      team_name: staticDefaults.team_name,
+      season: staticDefaults.top_right_text,
+      number: "28",
+      name: "츠키",
+      position: staticDefaults.position_text,
+      focus_x: 50,
+      focus_y: 50,
+      zoom: 100,
+      subject_glow: true,
+      ...staticDefaults,
+    });
+    bindInputs();
+    await callWorker("init");
+    runtimeReady = true;
+    runtimeBadge.textContent = "Python 준비 완료";
+    runtimeBadge.className = "badge ready";
+    setStatus("준비 완료. 피사체 이미지를 선택하세요.", false, true);
+  } catch (error) {
+    console.error(error);
+    runtimeBadge.textContent = "초기화 실패";
+    runtimeBadge.className = "badge error";
+    setStatus(`초기화 실패: ${error.message}. 이 페이지는 반드시 http:// 또는 https://로 열어야 합니다.`, true);
+  }
+}
+
+init();
