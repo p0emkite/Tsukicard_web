@@ -35,3 +35,8 @@
   .topbar{padding-left:12px;padding-right:12px}
   .excel-data-head{flex-direction:column}
 }
+
+#livePreviewCanvas{position:absolute;inset:0;width:100%;height:100%;display:none;pointer-events:none;z-index:1}
+.preview-stage.live-preview #livePreviewCanvas{display:block}
+.preview-stage.live-preview #previewImage{visibility:hidden}
+.preview-stage .center-guide,.preview-stage .face-guide{z-index:3}
