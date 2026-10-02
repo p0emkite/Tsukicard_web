@@ -100,15 +100,12 @@ function numValue(id, fallback = 0) {
 
 function currentTemplate() { return templates.get($("templateSelect").value); }
 function composedName() {
-  const number = $("numberInput").value.trim();
-  const name = $("nameInput").value.trim();
-  return number ? `${number}. ${name}`.trim() : name;
+  return $("nameInput").value.trim();
 }
 function filenameFromCurrent() {
-  const number = $("numberInput").value.trim();
   const name = $("nameInput").value.trim() || "card";
   const grade = $("templateSelect").value || "card";
-  return sanitizeFilename([number, name, grade].filter(Boolean).join("_"));
+  return sanitizeFilename([name, grade].filter(Boolean).join("_"));
 }
 
 function styleFromTemplate(resetAll = false) {
@@ -149,7 +146,6 @@ function collectControls() {
     grade: $("templateSelect").value,
     team_name: $("teamSelect").value,
     season: $("seasonInput").value,
-    number: $("numberInput").value,
     name: $("nameInput").value,
     position: $("positionInput").value,
     focus_x: numValue("focusXNumber", 50),
@@ -177,7 +173,7 @@ function applyControls(data) {
   if (data.grade && templates.has(data.grade)) $("templateSelect").value = data.grade;
   populateTeams(data.team_name);
   const map = {
-    season: "seasonInput", number: "numberInput", name: "nameInput", position: "positionInput",
+    season: "seasonInput", name: "nameInput", position: "positionInput",
     top_right_size: "headerSize", top_right_x: "headerX", top_right_y: "headerY", top_right_color: "headerColor",
     name_size: "nameSize", name_x: "nameX", name_y: "nameY", name_color: "nameColor", name_outline_width: "nameOutline",
     position_size: "positionSize", position_x: "positionX", position_y: "positionY", position_color: "positionColor",
@@ -403,7 +399,6 @@ function resetDefaults() {
     grade: "오팔",
     team_name: staticDefaults.team_name,
     season: staticDefaults.top_right_text,
-    number: "28",
     name: "츠키",
     position: staticDefaults.position_text,
     focus_x: 50, focus_y: 50, zoom: 100, subject_glow: true,
@@ -428,9 +423,9 @@ function bindInputs() {
     scheduleRender();
   });
   $("teamSelect").addEventListener("change", scheduleRender);
-  ["seasonInput","numberInput","nameInput","positionInput","headerSize","headerX","headerY","headerColor","nameSize","nameX","nameY","nameColor","nameOutline","positionSize","positionX","positionY","positionColor","glowCheck"].forEach(id => {
+  ["seasonInput","nameInput","positionInput","headerSize","headerX","headerY","headerColor","nameSize","nameX","nameY","nameColor","nameOutline","positionSize","positionX","positionY","positionColor","glowCheck"].forEach(id => {
     $(id).addEventListener("input", () => {
-      if (id === "numberInput" || id === "nameInput") maybeUpdateFilename();
+      if (id === "nameInput") maybeUpdateFilename();
       scheduleRender();
     });
     $(id).addEventListener("change", scheduleRender);
@@ -487,7 +482,7 @@ async function prepareBatch() {
       defval: "",
       raw: false,
       range: 2,
-      header: ["시즌", "등급", "구단", "등번호", "이름", "포지션", "이미지명", "저장파일명"],
+      header: ["시즌", "등급", "구단", "이름", "포지션", "이미지명", "저장파일명"],
     });
     batchRows = rows
       .filter(row => String(row["이름"] || "").trim() || String(row["이미지명"] || "").trim())
@@ -502,11 +497,11 @@ async function prepareBatch() {
 }
 
 function renderBatchTable() {
-  const html = `<table class="batch-table"><thead><tr><th>행</th><th>시즌</th><th>등급</th><th>구단</th><th>등번호</th><th>이름</th><th>포지션</th><th>이미지</th><th>상태</th></tr></thead><tbody>` +
+  const html = `<table class="batch-table"><thead><tr><th>행</th><th>시즌</th><th>등급</th><th>구단</th><th>이름</th><th>포지션</th><th>이미지</th><th>상태</th></tr></thead><tbody>` +
     batchRows.map(item => {
       const r = item.row;
       return `<tr class="${item.state === "done" ? "done" : item.state === "error" ? "error" : ""}">
-        <td>${item.index}</td><td>${escapeHtml(r["시즌"])}</td><td>${escapeHtml(r["등급"])}</td><td>${escapeHtml(r["구단"])}</td><td>${escapeHtml(r["등번호"])}</td><td>${escapeHtml(r["이름"])}</td><td>${escapeHtml(r["포지션"])}</td><td>${escapeHtml(r["이미지명"])}</td><td>${escapeHtml(item.message || item.state)}</td>
+        <td>${item.index}</td><td>${escapeHtml(r["시즌"])}</td><td>${escapeHtml(r["등급"])}</td><td>${escapeHtml(r["구단"])}</td><td>${escapeHtml(r["이름"])}</td><td>${escapeHtml(r["포지션"])}</td><td>${escapeHtml(r["이미지명"])}</td><td>${escapeHtml(item.message || item.state)}</td>
       </tr>`;
     }).join("") + `</tbody></table>`;
   $("batchTableWrap").innerHTML = html;
@@ -547,7 +542,7 @@ async function runBatch() {
         if (!name) throw new Error("이름이 비어 있음");
         const team = String(r["구단"] || "").trim();
         if (team && !tpl.team_logos?.[team]) throw new Error(`등록되지 않은 구단: ${team}`);
-        const displayName = number ? `${number}. ${name}` : name;
+        const displayName = name;
         const buffer = await image.arrayBuffer();
         await callWorker("setPhoto", { buffer }, [buffer]);
         const current = collectControls();
@@ -563,7 +558,7 @@ async function runBatch() {
         params.extra.gradient_profile = tpl.gradient_profile || {};
         await callWorker("ensureAssets", { paths: assetsFor(tpl, team) });
         const result = await callWorker("render", { template: tpl, params, width: 800, height: 1200 });
-        const fallback = [number, name, grade].filter(Boolean).join("_") + ".png";
+        const fallback = [name, grade].filter(Boolean).join("_") + ".png";
         const filename = sanitizeFilename(String(r["저장파일명"] || "").trim(), fallback);
         zip.file(filename, base64ToUint8(result.base64));
         item.state = "done";
@@ -602,7 +597,6 @@ async function init() {
       grade: "오팔",
       team_name: staticDefaults.team_name,
       season: staticDefaults.top_right_text,
-      number: "28",
       name: "츠키",
       position: staticDefaults.position_text,
       focus_x: 50,
