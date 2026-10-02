@@ -30,6 +30,19 @@ let excelDataSortColumn = null;
 let excelDataSortDesc = false;
 let selectedExcelDataId = null;
 
+// Browser-side realtime preview state
+const liveAssetCache = new Map();
+let liveSubjectCanvas = null;
+let livePreviewRaf = 0;
+let finalPreviewTimer = null;
+let liveFontsReady = null;
+let liveInteractionActive = false;
+
+const CUTOUT_CONFIG = {
+  model: "isnet",
+  output: { format: "image/png", quality: 1 },
+};
+
 worker.onmessage = (event) => {
   const { id, ok, data, error } = event.data || {};
   const pending = workerPending.get(id);
@@ -81,6 +94,250 @@ function base64ToUint8(base64) {
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
   return bytes;
+}
+
+
+async function registerModelCacheWorker() {
+  if (!("serviceWorker" in navigator)) return;
+  try {
+    await navigator.serviceWorker.register("./service-worker.js", { scope: "./" });
+  } catch (error) {
+    console.warn("모델 캐시 서비스 워커 등록 실패:", error);
+  }
+}
+
+async function ensureLiveFonts() {
+  if (liveFontsReady) return liveFontsReady;
+  liveFontsReady = (async () => {
+    try {
+      const vitro = new FontFace("TsukiVITRO", "url('./assets/fonts/VITRO_INSPIRE.otf')");
+      const free = new FontFace("TsukiFreesentation", "url('./assets/fonts/Freesentation-8ExtraBold.ttf')");
+      const loaded = await Promise.all([vitro.load(), free.load()]);
+      loaded.forEach(font => document.fonts.add(font));
+    } catch (error) {
+      console.warn("실시간 미리보기 폰트 로드 실패:", error);
+    }
+  })();
+  return liveFontsReady;
+}
+
+function loadLiveImage(path) {
+  if (!path) return Promise.resolve(null);
+  if (liveAssetCache.has(path)) return liveAssetCache.get(path);
+  const promise = new Promise((resolve, reject) => {
+    const img = new Image();
+    img.decoding = "async";
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error(`미리보기 자산 로드 실패: ${path}`));
+    img.src = new URL(path, location.href).href;
+  });
+  liveAssetCache.set(path, promise);
+  return promise;
+}
+
+async function prepareLiveSubject(blob) {
+  if (!blob) {
+    liveSubjectCanvas = null;
+    return;
+  }
+  const bitmap = await createImageBitmap(blob);
+  const temp = document.createElement("canvas");
+  temp.width = bitmap.width;
+  temp.height = bitmap.height;
+  const tctx = temp.getContext("2d", { willReadFrequently: true });
+  tctx.drawImage(bitmap, 0, 0);
+
+  let sx = 0, sy = 0, sw = temp.width, sh = temp.height;
+  try {
+    const pixels = tctx.getImageData(0, 0, temp.width, temp.height).data;
+    let minX = temp.width, minY = temp.height, maxX = -1, maxY = -1;
+    for (let y = 0; y < temp.height; y++) {
+      for (let x = 0; x < temp.width; x++) {
+        if (pixels[(y * temp.width + x) * 4 + 3] > 0) {
+          if (x < minX) minX = x;
+          if (y < minY) minY = y;
+          if (x > maxX) maxX = x;
+          if (y > maxY) maxY = y;
+        }
+      }
+    }
+    if (maxX >= minX && maxY >= minY) {
+      sx = minX; sy = minY; sw = maxX - minX + 1; sh = maxY - minY + 1;
+    }
+  } catch (_) {}
+
+  const out = document.createElement("canvas");
+  out.width = sw;
+  out.height = sh;
+  out.getContext("2d").drawImage(temp, sx, sy, sw, sh, 0, 0, sw, sh);
+  bitmap.close?.();
+  liveSubjectCanvas = out;
+}
+
+async function warmLivePreviewAssets() {
+  const tpl = currentTemplate();
+  if (!tpl) return;
+  const team = $("teamSelect").value;
+  const paths = [tpl.background, tpl.overlay];
+  const logo = tpl.team_logos?.[team];
+  if (logo) paths.push(logo);
+  await Promise.allSettled(paths.map(loadLiveImage));
+  await ensureLiveFonts();
+}
+
+function gradientForStops(ctx, stops, x0, y0, x1, y1) {
+  const g = ctx.createLinearGradient(x0, y0, x1, y1);
+  const list = Array.isArray(stops) && stops.length ? stops : [
+    { color: "#FFFFFF", position: 0 },
+    { color: "#D7D7D7", position: 100 },
+  ];
+  for (const stop of list) {
+    g.addColorStop(clamp(Number(stop.position || 0) / 100, 0, 1), stop.color || "#FFFFFF");
+  }
+  return g;
+}
+
+function drawLiveText(ctx, tpl, c, scaleX, scaleY) {
+  const gp = tpl.gradient_profile || {};
+  const stops = gp.stops || [];
+  const direction = gp.direction || "vertical";
+
+  const header = String(c.season || "").trim();
+  if (header) {
+    ctx.save();
+    ctx.font = `${c.top_right_size * scaleY}px TsukiVITRO, sans-serif`;
+    ctx.textAlign = "right";
+    ctx.textBaseline = "top";
+    ctx.fillStyle = c.top_right_color || "#009520";
+    ctx.fillText(header, c.top_right_x * scaleX, c.top_right_y * scaleY);
+    ctx.restore();
+  }
+
+  const name = String(c.name || "").trim();
+  if (name) {
+    ctx.save();
+    const x = c.name_x * scaleX;
+    const y = c.name_y * scaleY;
+    const size = c.name_size * scaleY;
+    ctx.font = `${size}px TsukiVITRO, sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    const metrics = ctx.measureText(name);
+    const width = Math.max(metrics.width, 1);
+    const top = y - size * 0.58;
+    const bottom = y + size * 0.58;
+    const grad = direction === "horizontal"
+      ? gradientForStops(ctx, stops, x - width / 2, y, x + width / 2, y)
+      : gradientForStops(ctx, stops, x, top, x, bottom);
+    ctx.lineJoin = "round";
+    ctx.miterLimit = 2;
+    ctx.lineWidth = Math.max(1, c.name_outline_width * 2 * scaleY);
+    ctx.strokeStyle = grad;
+    ctx.strokeText(name, x, y);
+    ctx.fillStyle = c.name_color || "#FFFFFF";
+    ctx.fillText(name, x, y);
+    // 로컬 제작기의 안쪽 반투명 검정 테두리를 시각적으로 근사
+    ctx.lineWidth = Math.max(0.8, scaleY * 1.5);
+    ctx.strokeStyle = "rgba(0,0,0,.48)";
+    ctx.strokeText(name, x, y);
+    ctx.fillText(name, x, y);
+    ctx.restore();
+  }
+
+  const position = String(c.position || "").trim();
+  if (position) {
+    ctx.save();
+    const x = c.position_x * scaleX;
+    const y = c.position_y * scaleY;
+    const size = c.position_size * scaleY;
+    ctx.font = `${size}px TsukiFreesentation, sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    const metrics = ctx.measureText(position);
+    const width = Math.max(metrics.width, 1);
+    const grad = direction === "horizontal"
+      ? gradientForStops(ctx, stops, x - width / 2, y, x + width / 2, y)
+      : gradientForStops(ctx, stops, x, y - size * .6, x, y + size * .6);
+    ctx.shadowColor = "rgba(0,0,0,.9)";
+    ctx.shadowBlur = 1 * scaleY;
+    ctx.shadowOffsetX = 2 * scaleX;
+    ctx.shadowOffsetY = 2 * scaleY;
+    ctx.fillStyle = grad;
+    ctx.fillText(position, x, y);
+    ctx.restore();
+  }
+}
+
+async function drawLivePreviewNow() {
+  if (!currentWorkingBlob || !liveSubjectCanvas) return;
+  const tpl = currentTemplate();
+  if (!tpl) return;
+
+  const canvas = $("livePreviewCanvas");
+  const ctx = canvas.getContext("2d");
+  const w = canvas.width, h = canvas.height;
+  const native = tpl.native_canvas || { width: 800, height: 1200 };
+  const sx = w / native.width;
+  const sy = h / native.height;
+  const c = collectControls();
+
+  const bg = await loadLiveImage(tpl.background);
+  const overlay = await loadLiveImage(tpl.overlay);
+  const logoPath = tpl.team_logos?.[c.team_name];
+  const logo = logoPath ? await loadLiveImage(logoPath) : null;
+  await ensureLiveFonts();
+
+  ctx.clearRect(0, 0, w, h);
+  if (bg) ctx.drawImage(bg, 0, 0, w, h);
+
+  const box = tpl.subject_box || { x: 0, y: 0, width: native.width, height: native.height };
+  const bw = box.width * sx;
+  const bh = box.height * sy;
+  const bx = box.x * sx;
+  const by = box.y * sy;
+  const subjectScale = Math.min(bw / liveSubjectCanvas.width, bh / liveSubjectCanvas.height) * Math.max(.1, c.zoom / 100);
+  const dw = liveSubjectCanvas.width * subjectScale;
+  const dh = liveSubjectCanvas.height * subjectScale;
+  const dx = bx + (bw - dw) * (c.focus_x / 100);
+  const dy = by + (bh - dh) * (c.focus_y / 100);
+
+  ctx.save();
+  if (c.subject_glow) {
+    ctx.shadowColor = "rgba(255,255,255,.9)";
+    ctx.shadowBlur = 16 * Math.min(sx, sy);
+  }
+  ctx.drawImage(liveSubjectCanvas, dx, dy, dw, dh);
+  ctx.restore();
+
+  if (overlay) ctx.drawImage(overlay, 0, 0, w, h);
+  if (logo) {
+    ctx.save();
+    ctx.shadowColor = "rgba(255,255,255,.75)";
+    ctx.shadowBlur = 5 * Math.min(sx, sy);
+    ctx.drawImage(logo, 0, 0, w, h);
+    ctx.restore();
+  }
+
+  drawLiveText(ctx, tpl, c, sx, sy);
+}
+
+function queueLivePreview() {
+  if (!currentWorkingBlob || !liveSubjectCanvas) return;
+  $("previewStage").classList.add("live-preview");
+  if (livePreviewRaf) return;
+  livePreviewRaf = requestAnimationFrame(async () => {
+    livePreviewRaf = 0;
+    try {
+      await drawLivePreviewNow();
+    } catch (error) {
+      console.warn("실시간 미리보기 렌더 실패:", error);
+    }
+  });
+}
+
+function scheduleFinalPreview(delay = 180) {
+  clearTimeout(finalPreviewTimer);
+  finalPreviewTimer = setTimeout(() => scheduleRender(true), delay);
 }
 
 async function loadJson(path) {
@@ -244,6 +501,8 @@ async function setWorkingPhoto(blob, label = "이미지") {
   const buffer = await blob.arrayBuffer();
   await callWorker("setPhoto", { buffer }, [buffer]);
   currentWorkingBlob = blob;
+  await prepareLiveSubject(blob);
+  await warmLivePreviewAssets();
   $("cutoutBtn").disabled = false;
   $("restorePhotoBtn").disabled = !currentOriginalFile || blob === currentOriginalFile;
   $("generateBtn").disabled = false;
@@ -276,6 +535,7 @@ async function runPreviewRender() {
     currentPreviewUrl = URL.createObjectURL(blob);
     $("previewImage").src = currentPreviewUrl;
     $("previewStage").classList.add("has-image");
+    $("previewStage").classList.remove("live-preview");
     setStatus("미리보기 완료. 드래그로 위치를 이동하고 휠로 확대/축소할 수 있습니다.", false, true);
   } catch (error) {
     console.error(error);
@@ -327,7 +587,8 @@ function bindRange(prefix, min, max) {
   const sync = (from, to) => {
     const value = clamp(Number(from.value || 0), min, max);
     to.value = value;
-    scheduleRender();
+    queueLivePreview();
+    scheduleFinalPreview(180);
   };
   range.addEventListener("input", () => sync(range, number));
   number.addEventListener("input", () => sync(number, range));
@@ -347,7 +608,9 @@ function bindPreviewGestures() {
     if (!currentWorkingBlob) return;
     stage.setPointerCapture(e.pointerId);
     dragState = { x: e.clientX, y: e.clientY };
-    stage.classList.add("dragging");
+    liveInteractionActive = true;
+    stage.classList.add("dragging", "live-preview");
+    queueLivePreview();
   });
   stage.addEventListener("pointermove", (e) => {
     if (!dragState) return;
@@ -359,18 +622,27 @@ function bindPreviewGestures() {
     setLinkedRange("focusX", nx.toFixed(1));
     setLinkedRange("focusY", ny.toFixed(1));
     dragState = { x: e.clientX, y: e.clientY };
-    scheduleRender();
+    queueLivePreview();
   });
-  const end = () => { dragState = null; stage.classList.remove("dragging"); };
-  stage.addEventListener("pointerup", end);
-  stage.addEventListener("pointercancel", end);
+  const endDrag = () => {
+    if (!dragState) return;
+    dragState = null;
+    liveInteractionActive = false;
+    stage.classList.remove("dragging");
+    scheduleFinalPreview(0);
+  };
+  stage.addEventListener("pointerup", endDrag);
+  stage.addEventListener("pointercancel", endDrag);
+
   stage.addEventListener("wheel", (e) => {
     if (!currentWorkingBlob) return;
     e.preventDefault();
+    const delta = Math.abs(e.deltaY) > 12 ? 3 : 1;
     const direction = e.deltaY < 0 ? 1 : -1;
-    const next = clamp(numValue("zoomNumber", 100) + direction * 3, 40, 500);
+    const next = clamp(numValue("zoomNumber", 100) + direction * delta, 40, 500);
     setLinkedRange("zoom", next);
-    scheduleRender();
+    queueLivePreview();
+    scheduleFinalPreview(160);
   }, { passive: false });
 }
 
@@ -382,8 +654,7 @@ async function doCutout() {
     setStatus("AI 누끼 모델을 준비하고 있습니다. 최초 실행은 다운로드 때문에 오래 걸릴 수 있습니다.");
     if (!cutoutModule) cutoutModule = await import("https://esm.sh/@imgly/background-removal@1.5.6");
     const out = await cutoutModule.removeBackground(currentWorkingBlob, {
-      model: "isnet",
-      output: { format: "image/png", quality: 1 },
+      ...CUTOUT_CONFIG,
       progress: (key, current, total) => setStatus(`AI 누끼 처리 중: ${key} ${Math.round((current / Math.max(1, total)) * 100)}%`),
     });
     await setWorkingPhoto(out, "AI 누끼 적용됨");
@@ -426,10 +697,14 @@ function bindInputs() {
     // 등급 변경 시 텍스트 크기/위치/색상은 유지한다.
     // 프레임/배경/그라데이션만 새 등급으로 바뀐다.
     populateTeams();
+    warmLivePreviewAssets();
     maybeUpdateFilename();
     scheduleRender();
   });
-  $("teamSelect").addEventListener("change", scheduleRender);
+  $("teamSelect").addEventListener("change", () => {
+    warmLivePreviewAssets();
+    scheduleRender();
+  });
   ["seasonInput","nameInput","positionInput","headerSize","headerX","headerY","headerColor","nameSize","nameX","nameY","nameColor","nameOutline","positionSize","positionX","positionY","positionColor","glowCheck"].forEach(id => {
     $(id).addEventListener("input", () => {
       if (id === "nameInput") maybeUpdateFilename();
@@ -800,6 +1075,7 @@ async function runBatch() {
 
 async function init() {
   try {
+    registerModelCacheWorker();
     setStatus("템플릿과 Python 실행 환경을 준비하고 있습니다.");
     await loadTemplates();
     staticDefaults = await loadJson("./config/baseball_defaults.json");
