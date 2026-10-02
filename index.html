@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>츠키카드 웹 제작기</title>
+  <meta name="description" content="GitHub Pages에서 동작하는 츠키카드 웹 제작기" />
+  <link rel="stylesheet" href="./styles.css" />
+  <script defer src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <h1>츠키카드 웹 제작기</h1>
+      <p>설치 없이 브라우저에서 카드 생성 · PNG 저장 · Excel 일괄 생성</p>
+    </div>
+    <div id="runtimeBadge" class="badge waiting">Python 준비 중</div>
+  </header>
+
+  <main class="layout">
+    <section class="panel controls-panel">
+      <h2>카드 설정</h2>
+
+      <div class="field full">
+        <label for="photoInput">피사체 이미지</label>
+        <div class="file-row">
+          <input id="photoInput" type="file" accept="image/png,image/jpeg,image/webp" />
+          <button id="cutoutBtn" class="secondary" type="button" disabled>AI 누끼</button>
+          <button id="restorePhotoBtn" class="ghost" type="button" disabled>원본 복원</button>
+        </div>
+        <small>PNG 투명 배경을 가장 권장합니다. AI 누끼는 최초 실행 때 모델을 내려받습니다.</small>
+      </div>
+
+      <div class="grid2">
+        <div class="field"><label for="templateSelect">등급</label><select id="templateSelect"></select></div>
+        <div class="field"><label for="teamSelect">구단</label><select id="teamSelect"></select></div>
+        <div class="field"><label for="seasonInput">시즌</label><input id="seasonInput" type="text" /></div>
+        <div class="field"><label for="numberInput">등번호</label><input id="numberInput" type="text" inputmode="numeric" /></div>
+        <div class="field"><label for="nameInput">이름</label><input id="nameInput" type="text" /></div>
+        <div class="field"><label for="positionInput">포지션</label><input id="positionInput" type="text" /></div>
+      </div>
+
+      <details open>
+        <summary>이미지 조정</summary>
+        <div class="details-body">
+          <div class="range-row"><label for="focusXRange">가로 위치</label><input id="focusXRange" type="range" min="-1000" max="1000" step="1" /><input id="focusXNumber" class="numberbox" type="number" min="-1000" max="1000" step="1" /></div>
+          <div class="range-row"><label for="focusYRange">세로 위치</label><input id="focusYRange" type="range" min="-1000" max="1000" step="1" /><input id="focusYNumber" class="numberbox" type="number" min="-1000" max="1000" step="1" /></div>
+          <div class="range-row"><label for="zoomRange">확대</label><input id="zoomRange" type="range" min="40" max="500" step="1" /><div class="number-with-suffix"><input id="zoomNumber" class="numberbox" type="number" min="40" max="500" step="1" /><span>%</span></div></div>
+          <div class="inline-options"><label class="check"><input id="glowCheck" type="checkbox" checked /> 피사체 외부 광선</label><button id="resetCropBtn" class="ghost" type="button">이미지 조정 초기화</button></div>
+        </div>
+      </details>
+
+      <details>
+        <summary>텍스트 미세 조정</summary>
+        <div class="details-body">
+          <h3>시즌</h3>
+          <div class="mini-grid">
+            <label>크기 <input id="headerSize" type="number" min="8" max="120" /></label>
+            <label>X <input id="headerX" type="number" min="-1000" max="2000" /></label>
+            <label>Y <input id="headerY" type="number" min="-1000" max="2400" /></label>
+            <label>색상 <input id="headerColor" type="color" /></label>
+          </div>
+          <h3>이름</h3>
+          <div class="mini-grid">
+            <label>크기 <input id="nameSize" type="number" min="12" max="180" /></label>
+            <label>X <input id="nameX" type="number" min="-1000" max="2000" /></label>
+            <label>Y <input id="nameY" type="number" min="-1000" max="2400" /></label>
+            <label>색상 <input id="nameColor" type="color" /></label>
+            <label>테두리 <input id="nameOutline" type="number" min="0" max="20" /></label>
+          </div>
+          <h3>포지션</h3>
+          <div class="mini-grid">
+            <label>크기 <input id="positionSize" type="number" min="12" max="200" step="0.5" /></label>
+            <label>X <input id="positionX" type="number" min="-1000" max="2000" /></label>
+            <label>Y <input id="positionY" type="number" min="-1000" max="2400" /></label>
+            <label>색상 <input id="positionColor" type="color" /></label>
+          </div>
+          <div class="button-row"><button id="resetTextBtn" class="ghost" type="button">현재 등급 기본 위치로</button></div>
+        </div>
+      </details>
+
+      <details>
+        <summary>미리보기 가이드</summary>
+        <div class="details-body">
+          <label class="check"><input id="centerGuideCheck" type="checkbox" checked /> 세로 50% 가이드 표시</label>
+          <label class="check"><input id="faceGuideCheck" type="checkbox" checked /> 얼굴 크기 가이드 표시</label>
+          <div class="range-row compact"><label for="faceGuideRange">얼굴 가이드</label><input id="faceGuideRange" type="range" min="40" max="180" step="1" value="100" /><output id="faceGuideValue">100%</output></div>
+        </div>
+      </details>
+
+      <details>
+        <summary>기본값</summary>
+        <div class="details-body">
+          <p class="muted">현재 브라우저에 저장됩니다. 다른 PC나 브라우저에는 공유되지 않습니다.</p>
+          <div class="button-row"><button id="saveDefaultsBtn" class="secondary" type="button">현재 값을 기본값으로 저장</button><button id="resetDefaultsBtn" class="ghost" type="button">기본값 초기화</button></div>
+        </div>
+      </details>
+    </section>
+
+    <section class="panel preview-panel">
+      <div class="preview-title-row"><h2>미리보기</h2><span id="previewHint">이미지를 선택하세요</span></div>
+      <div id="previewStage" class="preview-stage" tabindex="0" aria-label="카드 미리보기. 드래그로 이미지 이동, 휠로 확대 축소">
+        <img id="previewImage" alt="카드 미리보기" draggable="false" />
+        <div id="centerGuide" class="center-guide"></div>
+        <div id="faceGuide" class="face-guide"></div>
+        <div id="emptyPreview" class="empty-preview">피사체 이미지를 선택하면<br />여기에 카드가 표시됩니다.</div>
+      </div>
+      <p class="preview-help">미리보기 위에서 <b>드래그</b>: 위치 이동 · <b>마우스 휠</b>: 확대/축소</p>
+      <div class="save-box"><label for="filenameInput">저장 파일명</label><div class="file-row"><input id="filenameInput" type="text" value="28_츠키_오팔.png" /><button id="generateBtn" class="primary" type="button" disabled>PNG 생성·다운로드</button></div></div>
+      <div id="status" class="status">웹 제작기를 준비하고 있습니다.</div>
+    </section>
+  </main>
+
+  <section class="batch-wrap">
+    <div class="panel batch-panel">
+      <div class="batch-head">
+        <div><h2>Excel 일괄 생성</h2><p>기존 샘플 형식: 시즌 · 등급 · 구단 · 등번호 · 이름 · 포지션 · 이미지명 · 저장파일명</p></div>
+        <a class="button-link" href="./samples/츠키카드_일괄생성_샘플.xlsx" download>샘플 Excel</a>
+      </div>
+      <div class="batch-inputs"><div class="field"><label for="excelInput">Excel 파일</label><input id="excelInput" type="file" accept=".xlsx,.xls" /></div><div class="field"><label for="imageFolderInput">이미지 폴더</label><input id="imageFolderInput" type="file" accept="image/*" multiple webkitdirectory directory /></div></div>
+      <div class="button-row"><button id="batchBtn" class="primary" type="button" disabled>일괄 생성 ZIP 다운로드</button></div>
+      <div id="batchStatus" class="status compact-status">Excel과 이미지 폴더를 선택하세요.</div>
+      <div id="batchTableWrap" class="batch-table-wrap"></div>
+    </div>
+  </section>
+
+  <footer><p>렌더링은 사용자 브라우저 안에서 실행됩니다. 카드 원본 이미지는 별도 서버로 업로드하지 않습니다.</p></footer>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
