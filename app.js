@@ -24,6 +24,11 @@ let dragState = null;
 let batchRows = [];
 let batchImageFiles = [];
 let cutoutModule = null;
+const EXCEL_DATA_COLUMNS = ["시즌", "등급", "구단", "이름", "포지션", "저장파일명"];
+let loadedExcelRows = [];
+let excelDataSortColumn = null;
+let excelDataSortDesc = false;
+let selectedExcelDataId = null;
 
 worker.onmessage = (event) => {
   const { id, ok, data, error } = event.data || {};
@@ -303,6 +308,7 @@ async function generateAndDownload() {
     await callWorker("ensureAssets", { paths: assetsFor(template, params.extra.team_name) });
     const result = await callWorker("render", { template, params, width: 800, height: 1200 });
     downloadBlob(base64ToBlob(result.base64), sanitizeFilename($("filenameInput").value, filenameFromCurrent()));
+    markSelectedExcelDataDone();
     setStatus("PNG 생성이 완료되었습니다.", false, true);
   } catch (error) {
     setStatus(`PNG 생성 실패: ${error.message}`, true);
@@ -417,8 +423,9 @@ function bindInputs() {
   bindPreviewGestures();
 
   $("templateSelect").addEventListener("change", () => {
+    // 등급 변경 시 텍스트 크기/위치/색상은 유지한다.
+    // 프레임/배경/그라데이션만 새 등급으로 바뀐다.
     populateTeams();
-    styleFromTemplate(true);
     maybeUpdateFilename();
     scheduleRender();
   });
@@ -446,14 +453,221 @@ function bindInputs() {
   $("cutoutBtn").addEventListener("click", doCutout);
   $("generateBtn").addEventListener("click", generateAndDownload);
   $("resetCropBtn").addEventListener("click", () => { setLinkedRange("focusX", 50); setLinkedRange("focusY", 50); setLinkedRange("zoom", 100); scheduleRender(); });
-  $("resetTextBtn").addEventListener("click", () => { styleFromTemplate(true); scheduleRender(); });
+  $("resetTextBtn").addEventListener("click", () => {
+    const c = collectControls();
+    applyControls({
+      ...c,
+      top_right_size: staticDefaults.top_right_size,
+      top_right_x: staticDefaults.top_right_x,
+      top_right_y: staticDefaults.top_right_y,
+      top_right_color: staticDefaults.top_right_color,
+      name_size: staticDefaults.name_size,
+      name_x: staticDefaults.name_x,
+      name_y: staticDefaults.name_y,
+      name_color: staticDefaults.name_color,
+      name_outline_width: staticDefaults.name_outline_width,
+      position_size: staticDefaults.position_size,
+      position_x: staticDefaults.position_x,
+      position_y: staticDefaults.position_y,
+      position_color: staticDefaults.position_color,
+    });
+    scheduleRender();
+  });
   $("saveDefaultsBtn").addEventListener("click", saveDefaults);
   $("resetDefaultsBtn").addEventListener("click", resetDefaults);
   ["centerGuideCheck","faceGuideCheck","faceGuideRange"].forEach(id => $(id).addEventListener("input", updateGuides));
   updateGuides();
+
+  $("excelDataLoadBtn").addEventListener("click", () => $("excelDataInput").click());
+  $("excelDataInput").addEventListener("change", loadExcelDataPanel);
+
   $("excelInput").addEventListener("change", prepareBatch);
   $("imageFolderInput").addEventListener("change", prepareBatch);
   $("batchBtn").addEventListener("click", runBatch);
+}
+
+
+function excelNaturalSortKey(value) {
+  return String(value ?? "").trim().toLocaleLowerCase("ko-KR");
+}
+
+function excelNaturalCompare(a, b) {
+  const aa = excelNaturalSortKey(a);
+  const bb = excelNaturalSortKey(b);
+  return aa.localeCompare(bb, "ko-KR", { numeric: true, sensitivity: "base" });
+}
+
+function renderExcelDataHead() {
+  const head = $("excelDataHead");
+  head.innerHTML = "<tr>" + EXCEL_DATA_COLUMNS.map(col => {
+    const arrow = col === excelDataSortColumn ? (excelDataSortDesc ? " ▼" : " ▲") : "";
+    return `<th data-col="${escapeHtml(col)}">${escapeHtml(col)}${arrow}</th>`;
+  }).join("") + "</tr>";
+  head.querySelectorAll("th").forEach(th => {
+    th.addEventListener("click", () => sortExcelDataPanel(th.dataset.col));
+  });
+}
+
+function renderExcelDataBody() {
+  const body = $("excelDataBody");
+  if (!loadedExcelRows.length) {
+    body.innerHTML = '<tr class="excel-data-empty"><td colspan="6">불러온 엑셀 데이터가 없습니다.</td></tr>';
+    return;
+  }
+  body.innerHTML = loadedExcelRows.map(item => {
+    const cls = [
+      item.done ? "done" : "",
+      item.id === selectedExcelDataId ? "selected" : "",
+    ].filter(Boolean).join(" ");
+    return `<tr data-id="${item.id}" class="${cls}">
+      ${EXCEL_DATA_COLUMNS.map(col => `<td data-col="${escapeHtml(col)}">${escapeHtml(item.row[col] ?? "")}</td>`).join("")}
+    </tr>`;
+  }).join("");
+
+  body.querySelectorAll("tr[data-id]").forEach(tr => {
+    tr.addEventListener("click", () => selectExcelDataRow(tr.dataset.id, true));
+    tr.addEventListener("dblclick", (event) => {
+      event.preventDefault();
+      selectExcelDataRow(tr.dataset.id, true);
+      toggleExcelDataDone(tr.dataset.id);
+    });
+  });
+}
+
+function sortExcelDataPanel(column) {
+  if (!EXCEL_DATA_COLUMNS.includes(column)) return;
+  if (excelDataSortColumn === column) excelDataSortDesc = !excelDataSortDesc;
+  else {
+    excelDataSortColumn = column;
+    excelDataSortDesc = true;
+  }
+
+  const nonempty = [];
+  const empty = [];
+  loadedExcelRows.forEach(item => {
+    const value = String(item.row[column] ?? "").trim();
+    (value ? nonempty : empty).push(item);
+  });
+  nonempty.sort((a, b) => {
+    const cmp = excelNaturalCompare(a.row[column], b.row[column]);
+    return excelDataSortDesc ? -cmp : cmp;
+  });
+  loadedExcelRows = nonempty.concat(empty);
+  renderExcelDataHead();
+  renderExcelDataBody();
+  $("excelDataStatus").textContent =
+    `엑셀 데이터 정렬: ${column} · ${excelDataSortDesc ? "내림차순" : "오름차순"}`;
+}
+
+function selectExcelDataRow(id, apply = true) {
+  const item = loadedExcelRows.find(x => x.id === id);
+  if (!item) return;
+  selectedExcelDataId = id;
+  renderExcelDataBody();
+  if (apply) applyExcelDataRow(item);
+}
+
+function applyExcelDataRow(item) {
+  const r = item.row;
+  const grade = String(r["등급"] || "").trim();
+  if (grade && templates.has(grade)) {
+    $("templateSelect").value = grade;
+    populateTeams(String(r["구단"] || "").trim());
+  } else if (grade) {
+    $("excelDataStatus").textContent = `등록되지 않은 등급: ${grade}`;
+  }
+
+  const team = String(r["구단"] || "").trim();
+  if (team) $("teamSelect").value = team;
+
+  $("seasonInput").value = String(r["시즌"] || "").trim();
+  $("nameInput").value = String(r["이름"] || "").trim();
+  $("positionInput").value = String(r["포지션"] || "").trim();
+
+  const requested = String(r["저장파일명"] || "").trim();
+  $("filenameInput").value = requested ? sanitizeFilename(requested) : filenameFromCurrent();
+
+  scheduleRender();
+  $("excelDataStatus").textContent =
+    `설정 적용: ${r["이름"] || r["저장파일명"] || "선택 행"}`;
+}
+
+function toggleExcelDataDone(id) {
+  const item = loadedExcelRows.find(x => x.id === id);
+  if (!item) return;
+  item.done = !item.done;
+  renderExcelDataBody();
+  $("excelDataStatus").textContent =
+    `${item.done ? "제작 완료 표시" : "제작 완료 표시 해제"}: ${item.row["저장파일명"] || item.row["이름"] || id}`;
+}
+
+function markSelectedExcelDataDone() {
+  if (!selectedExcelDataId) return;
+  const item = loadedExcelRows.find(x => x.id === selectedExcelDataId);
+  if (!item) return;
+  item.done = true;
+  renderExcelDataBody();
+}
+
+async function loadExcelDataPanel(event) {
+  const file = event.target.files?.[0];
+  if (!file) return;
+  try {
+    ensureSheetJs();
+    const data = await file.arrayBuffer();
+    const wb = XLSX.read(data, { type: "array", raw: false });
+    const sheetName = wb.SheetNames.includes("입력") ? "입력" : wb.SheetNames[0];
+    const ws = wb.Sheets[sheetName];
+
+    const grid = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "", raw: false });
+    let headerRow = -1;
+    let indices = null;
+    for (let i = 0; i < Math.min(grid.length, 20); i++) {
+      const labels = grid[i].map(x => String(x ?? "").trim());
+      if (EXCEL_DATA_COLUMNS.every(col => labels.includes(col))) {
+        headerRow = i;
+        indices = EXCEL_DATA_COLUMNS.map(col => labels.indexOf(col));
+        break;
+      }
+    }
+    if (headerRow < 0) throw new Error("필요한 열을 찾지 못했습니다: " + EXCEL_DATA_COLUMNS.join(" | "));
+
+    loadedExcelRows = [];
+    for (let r = headerRow + 1; r < grid.length; r++) {
+      const raw = grid[r] || [];
+      const row = {};
+      EXCEL_DATA_COLUMNS.forEach((col, i) => row[col] = String(raw[indices[i]] ?? "").trim());
+      if (!EXCEL_DATA_COLUMNS.some(col => row[col])) continue;
+      // 양식 2행의 [예시] 행은 로컬/웹 일괄 생성 규칙과 동일하게 제외
+      if (r === headerRow + 1 && String(row["시즌"]).startsWith("[예시]")) continue;
+      loadedExcelRows.push({
+        id: `excel_${r + 1}`,
+        excelRow: r + 1,
+        row,
+        done: false,
+      });
+    }
+
+    if (!loadedExcelRows.length) throw new Error("불러올 데이터 행이 없습니다.");
+
+    excelDataSortColumn = null;
+    excelDataSortDesc = false;
+    selectedExcelDataId = null;
+    renderExcelDataHead();
+    renderExcelDataBody();
+    $("excelDataHint").textContent =
+      `${file.name} · ${loadedExcelRows.length}행 불러옴 · 열 제목 클릭=정렬 / 한 번 클릭=설정 적용 / 더블클릭=제작 완료 토글`;
+    $("excelDataStatus").textContent =
+      `엑셀 데이터 ${loadedExcelRows.length}행을 불러왔습니다. 적용할 행을 클릭하세요.`;
+  } catch (error) {
+    loadedExcelRows = [];
+    selectedExcelDataId = null;
+    renderExcelDataHead();
+    renderExcelDataBody();
+    $("excelDataStatus").textContent = "엑셀 데이터 불러오기 실패: " + error.message;
+  } finally {
+    event.target.value = "";
+  }
 }
 
 function ensureSheetJs() {
@@ -605,6 +819,8 @@ async function init() {
       ...staticDefaults,
     });
     bindInputs();
+    renderExcelDataHead();
+    renderExcelDataBody();
     await callWorker("init");
     runtimeReady = true;
     runtimeBadge.textContent = "Python 준비 완료";
