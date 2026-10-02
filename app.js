@@ -754,8 +754,12 @@ function bindInputs() {
   ["centerGuideCheck","faceGuideCheck","faceGuideRange"].forEach(id => $(id).addEventListener("input", updateGuides));
   updateGuides();
 
-  $("excelDataLoadBtn").addEventListener("click", () => $("excelDataInput").click());
-  $("excelDataInput").addEventListener("change", loadExcelDataPanel);
+  const excelDataLoadBtn = $("excelDataLoadBtn");
+  const excelDataInput = $("excelDataInput");
+  if (excelDataLoadBtn && excelDataInput) {
+    excelDataLoadBtn.addEventListener("click", () => excelDataInput.click());
+    excelDataInput.addEventListener("change", loadExcelDataPanel);
+  }
 
   $("excelInput").addEventListener("change", prepareBatch);
   $("imageFolderInput").addEventListener("change", prepareBatch);
@@ -775,6 +779,7 @@ function excelNaturalCompare(a, b) {
 
 function renderExcelDataHead() {
   const head = $("excelDataHead");
+  if (!head) return;
   head.innerHTML = "<tr>" + EXCEL_DATA_COLUMNS.map(col => {
     const arrow = col === excelDataSortColumn ? (excelDataSortDesc ? " ▼" : " ▲") : "";
     return `<th data-col="${escapeHtml(col)}">${escapeHtml(col)}${arrow}</th>`;
@@ -786,6 +791,7 @@ function renderExcelDataHead() {
 
 function renderExcelDataBody() {
   const body = $("excelDataBody");
+  if (!body) return;
   if (!loadedExcelRows.length) {
     body.innerHTML = '<tr class="excel-data-empty"><td colspan="6">불러온 엑셀 데이터가 없습니다.</td></tr>';
     return;
