@@ -101,6 +101,7 @@ async function registerModelCacheWorker() {
   if (!("serviceWorker" in navigator)) return;
   try {
     await navigator.serviceWorker.register("./service-worker.js", { scope: "./" });
+    await navigator.serviceWorker.ready;
   } catch (error) {
     console.warn("모델 캐시 서비스 워커 등록 실패:", error);
   }
@@ -1075,7 +1076,7 @@ async function runBatch() {
 
 async function init() {
   try {
-    registerModelCacheWorker();
+    await registerModelCacheWorker();
     setStatus("템플릿과 Python 실행 환경을 준비하고 있습니다.");
     await loadTemplates();
     staticDefaults = await loadJson("./config/baseball_defaults.json");
