@@ -1,6 +1,6 @@
 from __future__ import annotations
 from pathlib import Path
-from PIL import Image, ImageColor, ImageDraw, ImageFilter, ImageFont, ImageOps
+from PIL import Image, ImageChops, ImageColor, ImageDraw, ImageFilter, ImageFont, ImageOps
 
 ROOT = Path(__file__).resolve().parent
 
@@ -68,15 +68,38 @@ def _paint(canvas, mask, color=None, gradient=None, bbox=None, direction='vertic
         r,g,b=_rgb(color or '#FFFFFF'); layer=Image.new('RGBA',canvas.size,(r,g,b,0)); layer.putalpha(mask.point(lambda v: round(v*opacity/255)))
     canvas.alpha_composite(layer)
 
+def _erode_mask(mask, pixels):
+    pixels=max(0,int(pixels))
+    if pixels<=0:
+        return mask.copy()
+    size=max(3,pixels*2+1)
+    if size%2==0:
+        size+=1
+    return mask.filter(ImageFilter.MinFilter(size))
+
 def _name(canvas,text,font,x,y,anchor,profile,fill):
     d=ImageDraw.Draw(canvas); pos=_pos(d,text,font,x,y,anchor)
     outer=int(profile.get('outer_stroke_width',3)); inner=int(profile.get('inner_stroke_width',1))
     stops=profile.get('stops'); direction=profile.get('direction','vertical')
+
+    fill_mask=_mask_text(canvas.size,text,font,pos,0)
+
     if outer:
-        m=_mask_text(canvas.size,text,font,pos,outer); _paint(canvas,m,'#FFFFFF')
+        full_mask=_mask_text(canvas.size,text,font,pos,outer)
+        outer_mask=ImageChops.subtract(full_mask,fill_mask)
+        _paint(canvas,outer_mask,gradient=stops,bbox=full_mask.getbbox(),direction=direction)
+
+    _paint(canvas,fill_mask,color=fill)
+
     if inner:
-        m=_mask_text(canvas.size,text,font,pos,inner); _paint(canvas,m,profile.get('inner_stroke_color','#000000'),opacity=int(profile.get('inner_stroke_opacity',128)))
-    m=_mask_text(canvas.size,text,font,pos,0); _paint(canvas,m,fill,stops,m.getbbox(),direction)
+        inner_core=_erode_mask(fill_mask,inner)
+        inner_edge=ImageChops.subtract(fill_mask,inner_core)
+        _paint(
+            canvas,
+            inner_edge,
+            color=profile.get('inner_stroke_color','#000000'),
+            opacity=int(profile.get('inner_stroke_opacity',128)),
+        )
 
 def _position(canvas,text,font,x,y,anchor,stops,direction,fill):
     d=ImageDraw.Draw(canvas); pos=_pos(d,text,font,x,y,anchor)
