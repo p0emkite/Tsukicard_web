@@ -125,6 +125,34 @@
     </div>
   </section>
 
+
+    </div>
+
+    <aside class="panel excel-data-panel">
+      <div class="excel-data-head">
+        <div>
+          <h2>불러온 엑셀 데이터</h2>
+          <p id="excelDataHint">엑셀을 불러오면 행을 클릭해 설정을 적용할 수 있습니다.</p>
+        </div>
+        <div>
+          <button id="excelDataLoadBtn" class="secondary" type="button">엑셀 데이터 불러오기</button>
+          <input id="excelDataInput" type="file" accept=".xlsx,.xls" hidden />
+        </div>
+      </div>
+      <div id="excelDataStatus" class="status compact-status">
+        열 제목 클릭=정렬 · 한 번 클릭=설정 적용 · 더블클릭=제작 완료 토글
+      </div>
+      <div id="excelDataTableWrap" class="excel-data-table-wrap">
+        <table class="excel-data-table">
+          <thead id="excelDataHead"></thead>
+          <tbody id="excelDataBody">
+            <tr class="excel-data-empty"><td colspan="6">불러온 엑셀 데이터가 없습니다.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </aside>
+  </div>
+
   <footer><p>렌더링은 사용자 브라우저 안에서 실행됩니다. 카드 원본 이미지는 별도 서버로 업로드하지 않습니다.</p></footer>
   <script type="module" src="./app.js"></script>
 </body>
