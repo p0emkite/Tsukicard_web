@@ -537,7 +537,6 @@ async function runBatch() {
         if (!tpl) throw new Error(`등록되지 않은 등급: ${grade}`);
         const image = findBatchImage(r["이미지명"]);
         if (!image) throw new Error(`이미지를 찾을 수 없음: ${r["이미지명"]}`);
-        const number = String(r["등번호"] ?? "").trim().replace(/\.0+$/, "");
         const name = String(r["이름"] || "").trim();
         if (!name) throw new Error("이름이 비어 있음");
         const team = String(r["구단"] || "").trim();
