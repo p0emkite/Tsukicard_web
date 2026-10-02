@@ -85,3 +85,39 @@
   .left-workspace .layout{grid-template-columns:1fr}
   .topbar,.page-shell{width:calc(100% - 24px);margin-left:12px;margin-right:12px}
 }
+
+/* Final viewport-fill layout: no artificial max-width on large/zoomed screens */
+.topbar{
+  width:calc(100vw - 32px);
+  max-width:none !important;
+  margin:0 16px;
+  padding-left:0;
+  padding-right:0;
+}
+.page-shell{
+  width:calc(100vw - 32px);
+  max-width:none !important;
+  margin:0 16px;
+  grid-template-columns:minmax(860px,940px) minmax(520px,1fr);
+  gap:18px;
+}
+.left-workspace{
+  min-width:0;
+  width:100%;
+}
+.excel-data-panel{
+  width:100%;
+  min-width:0;
+}
+@media(max-width:1450px){
+  .page-shell{
+    grid-template-columns:1fr;
+  }
+}
+@media(max-width:960px){
+  .topbar,.page-shell{
+    width:calc(100vw - 24px);
+    margin-left:12px;
+    margin-right:12px;
+  }
+}
