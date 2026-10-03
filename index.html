@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>츠키카드 웹 제작기</title>
   <meta name="description" content="GitHub Pages에서 동작하는 츠키카드 웹 제작기" />
-  <link rel="stylesheet" href="./styles.css?v=20261003-3" />
+  <link rel="stylesheet" href="./styles.css?v=20261003-4" />
   <script defer src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 </head>
@@ -109,7 +109,15 @@
         <div id="emptyPreview" class="empty-preview">피사체 이미지를 선택하면<br />여기에 카드가 표시됩니다.</div>
       </div>
       <p class="preview-help">미리보기 위에서 <b>드래그</b>: 위치 이동 · <b>마우스 휠</b>: 확대/축소</p>
-      <div class="save-box"><label for="filenameInput">저장 파일명</label><div class="file-row"><input id="filenameInput" type="text" value="츠키_오팔.png" /><button id="generateBtn" class="primary" type="button" disabled>PNG 생성·다운로드</button></div></div>
+      <div class="save-box">
+        <label for="filenameInput">저장 파일명</label>
+        <div class="file-row">
+          <input id="filenameInput" type="text" value="츠키_오팔.png" />
+          <button id="savePathBtn" class="ghost" type="button">저장 경로 설정</button>
+          <button id="generateBtn" class="primary" type="button" disabled>저장</button>
+        </div>
+        <div id="savePathStatus" class="save-path-status">저장 위치: 브라우저 기본 다운로드 폴더</div>
+      </div>
       <div id="status" class="status">웹 제작기를 준비하고 있습니다.</div>
     </section>
   </main>
@@ -157,6 +165,6 @@
   </div>
 
   <footer><p>렌더링은 사용자 브라우저 안에서 실행됩니다. 카드 원본 이미지는 별도 서버로 업로드하지 않습니다.</p></footer>
-  <script type="module" src="./app.js?v=20261003-3"></script>
+  <script type="module" src="./app.js?v=20261003-4"></script>
 </body>
 </html>
