@@ -252,3 +252,52 @@ footer{text-align:center;color:var(--muted);font-size:12px;padding:0 24px 32px}
   .file-row>input{flex-basis:100%}
   .batch-head,.excel-data-head{flex-direction:column}
 }
+
+
+/* Excel progress controls + column filters */
+.excel-data-actions{
+  display:flex;
+  gap:8px;
+  align-items:center;
+  flex-wrap:wrap;
+  justify-content:flex-end;
+}
+.excel-data-actions button{
+  white-space:nowrap;
+}
+.excel-filter-row th{
+  background:#fbfcfe;
+  padding:6px 7px;
+  cursor:default;
+  position:sticky;
+  top:35px;
+  z-index:3;
+}
+.excel-sort-row th{
+  position:sticky;
+  top:0;
+  z-index:4;
+}
+.excel-column-filter{
+  width:100%;
+  min-width:86px;
+  height:30px;
+  min-height:30px;
+  padding:3px 24px 3px 7px;
+  border:1px solid #d7dce3;
+  border-radius:7px;
+  background:#fff;
+  font-size:11px;
+  font-weight:600;
+  color:#404751;
+}
+.excel-column-filter:focus{
+  outline:2px solid rgba(43,102,217,.22);
+  outline-offset:1px;
+}
+@media(max-width:620px){
+  .excel-data-actions{
+    width:100%;
+    justify-content:flex-start;
+  }
+}
