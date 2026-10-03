@@ -301,3 +301,16 @@ footer{text-align:center;color:var(--muted);font-size:12px;padding:0 24px 32px}
     justify-content:flex-start;
   }
 }
+
+.save-path-status{
+  margin-top:7px;
+  color:var(--muted);
+  font-size:11px;
+  line-height:1.4;
+}
+.save-box .file-row{
+  align-items:center;
+}
+.save-box #savePathBtn{
+  white-space:nowrap;
+}
