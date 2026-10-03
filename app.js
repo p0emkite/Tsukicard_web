@@ -2,6 +2,9 @@ const $ = (id) => document.getElementById(id);
 const ORDER = ["오팔", "코랄", "골드", "실버", "TB", "올스타", "설날"];
 const STORAGE_KEY = "tsuki-card-web-defaults-v1";
 const EXCEL_PROGRESS_STORAGE_KEY = "tsuki-card-web-excel-progress-v1";
+const SAVE_FOLDER_DB_NAME = "tsuki-card-web-storage";
+const SAVE_FOLDER_STORE = "handles";
+const SAVE_FOLDER_KEY = "png-save-folder";
 const FONT_PATHS = [
   "assets/fonts/VITRO_INSPIRE.otf",
   "assets/fonts/Freesentation-8ExtraBold.ttf",
@@ -31,6 +34,7 @@ let excelDataSortColumn = null;
 let excelDataSortDesc = false;
 let selectedExcelDataId = null;
 let excelDataFilters = Object.fromEntries(EXCEL_DATA_COLUMNS.map(col => [col, ""]));
+let saveDirectoryHandle = null;
 
 // Browser-side realtime preview state
 const liveAssetCache = new Map();
@@ -102,6 +106,109 @@ function base64ToUint8(base64) {
   return bytes;
 }
 
+
+
+function openSaveFolderDb() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(SAVE_FOLDER_DB_NAME, 1);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(SAVE_FOLDER_STORE)) {
+        db.createObjectStore(SAVE_FOLDER_STORE);
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function storeSaveDirectoryHandle(handle) {
+  const db = await openSaveFolderDb();
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(SAVE_FOLDER_STORE, "readwrite");
+    tx.objectStore(SAVE_FOLDER_STORE).put(handle, SAVE_FOLDER_KEY);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
+  });
+  db.close();
+}
+
+async function loadSaveDirectoryHandle() {
+  try {
+    const db = await openSaveFolderDb();
+    const handle = await new Promise((resolve, reject) => {
+      const tx = db.transaction(SAVE_FOLDER_STORE, "readonly");
+      const req = tx.objectStore(SAVE_FOLDER_STORE).get(SAVE_FOLDER_KEY);
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => reject(req.error);
+    });
+    db.close();
+    return handle;
+  } catch (error) {
+    console.warn("저장 폴더 불러오기 실패:", error);
+    return null;
+  }
+}
+
+function updateSavePathStatus() {
+  const el = $("savePathStatus");
+  if (!el) return;
+  if (saveDirectoryHandle) {
+    el.textContent = `저장 위치: ${saveDirectoryHandle.name}`;
+  } else {
+    el.textContent = "저장 위치: 브라우저 기본 다운로드 폴더";
+  }
+}
+
+async function ensureDirectoryPermission(handle, ask = true) {
+  if (!handle) return false;
+  const opts = { mode: "readwrite" };
+  if ((await handle.queryPermission?.(opts)) === "granted") return true;
+  if (ask && (await handle.requestPermission?.(opts)) === "granted") return true;
+  return false;
+}
+
+async function chooseSaveDirectory() {
+  if (!("showDirectoryPicker" in window)) {
+    setStatus("이 브라우저는 저장 경로 지정 기능을 지원하지 않습니다. 기본 다운로드 폴더를 사용합니다.", true);
+    return;
+  }
+  try {
+    const handle = await window.showDirectoryPicker({ mode: "readwrite" });
+    const allowed = await ensureDirectoryPermission(handle, true);
+    if (!allowed) throw new Error("선택한 폴더의 쓰기 권한을 허용하지 않았습니다.");
+    saveDirectoryHandle = handle;
+    await storeSaveDirectoryHandle(handle);
+    updateSavePathStatus();
+    setStatus(`저장 위치를 '${handle.name}' 폴더로 설정했습니다.`, false, true);
+  } catch (error) {
+    if (error?.name === "AbortError") return;
+    setStatus(`저장 경로 설정 실패: ${error.message}`, true);
+  }
+}
+
+async function saveBlobToChosenLocation(blob, filename) {
+  const safeName = sanitizeFilename(filename);
+
+  if (saveDirectoryHandle) {
+    try {
+      const allowed = await ensureDirectoryPermission(saveDirectoryHandle, true);
+      if (allowed) {
+        const fileHandle = await saveDirectoryHandle.getFileHandle(safeName, { create: true });
+        const writable = await fileHandle.createWritable();
+        await writable.write(blob);
+        await writable.close();
+        return { mode: "folder", name: saveDirectoryHandle.name };
+      }
+    } catch (error) {
+      console.warn("지정 폴더 저장 실패, 기본 다운로드로 폴백:", error);
+    }
+  }
+
+  downloadBlob(blob, safeName);
+  return { mode: "download" };
+}
 
 async function registerModelCacheWorker() {
   if (!("serviceWorker" in navigator)) return;
@@ -574,9 +681,15 @@ async function generateAndDownload() {
     const params = paramsForRender();
     await callWorker("ensureAssets", { paths: assetsFor(template, params.extra.team_name) });
     const result = await callWorker("render", { template, params, width: 800, height: 1200 });
-    downloadBlob(base64ToBlob(result.base64), sanitizeFilename($("filenameInput").value, filenameFromCurrent()));
+    const blob = base64ToBlob(result.base64);
+    const filename = sanitizeFilename($("filenameInput").value, filenameFromCurrent());
+    const saved = await saveBlobToChosenLocation(blob, filename);
     markSelectedExcelDataDone();
-    setStatus("PNG 생성이 완료되었습니다.", false, true);
+    if (saved.mode === "folder") {
+      setStatus(`저장 완료: ${saved.name} / ${filename}`, false, true);
+    } else {
+      setStatus("저장 완료: 브라우저 기본 다운로드 폴더", false, true);
+    }
   } catch (error) {
     setStatus(`PNG 생성 실패: ${error.message}`, true);
   } finally { btn.disabled = false; }
@@ -759,6 +872,8 @@ function bindInputs() {
   });
   $("cutoutBtn").addEventListener("click", doCutout);
   $("generateBtn").addEventListener("click", generateAndDownload);
+  const savePathBtn = $("savePathBtn");
+  if (savePathBtn) savePathBtn.addEventListener("click", chooseSaveDirectory);
   $("resetCropBtn").addEventListener("click", () => { setLinkedRange("focusX", 50); setLinkedRange("focusY", 50); setLinkedRange("zoom", 100); scheduleRender(); });
   $("resetTextBtn").addEventListener("click", () => {
     const c = collectControls();
@@ -1252,6 +1367,8 @@ async function init() {
       subject_glow: true,
       ...staticDefaults,
     });
+    saveDirectoryHandle = await loadSaveDirectoryHandle();
+    updateSavePathStatus();
     bindInputs();
     renderExcelDataHead();
     renderExcelDataBody();
