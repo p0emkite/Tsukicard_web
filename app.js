@@ -1,6 +1,7 @@
 const $ = (id) => document.getElementById(id);
 const ORDER = ["오팔", "코랄", "골드", "실버", "TB", "올스타", "설날"];
 const STORAGE_KEY = "tsuki-card-web-defaults-v1";
+const EXCEL_PROGRESS_STORAGE_KEY = "tsuki-card-web-excel-progress-v1";
 const FONT_PATHS = [
   "assets/fonts/VITRO_INSPIRE.otf",
   "assets/fonts/Freesentation-8ExtraBold.ttf",
@@ -29,6 +30,7 @@ let loadedExcelRows = [];
 let excelDataSortColumn = null;
 let excelDataSortDesc = false;
 let selectedExcelDataId = null;
+let excelDataFilters = Object.fromEntries(EXCEL_DATA_COLUMNS.map(col => [col, ""]));
 
 // Browser-side realtime preview state
 const liveAssetCache = new Map();
@@ -42,6 +44,10 @@ const CUTOUT_CONFIG = {
   model: "isnet",
   output: { format: "image/png", quality: 1 },
 };
+
+function webGpuAvailable() {
+  return typeof navigator !== "undefined" && !!navigator.gpu;
+}
 
 worker.onmessage = (event) => {
   const { id, ok, data, error } = event.data || {};
@@ -654,11 +660,36 @@ async function doCutout() {
   try {
     setStatus("AI 누끼 모델을 준비하고 있습니다. 최초 실행은 다운로드 때문에 오래 걸릴 수 있습니다.");
     if (!cutoutModule) cutoutModule = await import("https://esm.sh/@imgly/background-removal@1.5.6");
-    const out = await cutoutModule.removeBackground(currentWorkingBlob, {
-      ...CUTOUT_CONFIG,
-      progress: (key, current, total) => setStatus(`AI 누끼 처리 중: ${key} ${Math.round((current / Math.max(1, total)) * 100)}%`),
-    });
-    await setWorkingPhoto(out, "AI 누끼 적용됨");
+    const progress = (key, current, total) =>
+      setStatus(`AI 누끼 처리 중: ${key} ${Math.round((current / Math.max(1, total)) * 100)}%`);
+
+    let out;
+    if (webGpuAvailable()) {
+      try {
+        setStatus("AI 누끼: WebGPU로 처리 중...");
+        out = await cutoutModule.removeBackground(currentWorkingBlob, {
+          ...CUTOUT_CONFIG,
+          device: "gpu",
+          progress,
+        });
+      } catch (gpuError) {
+        console.warn("WebGPU 누끼 실패, CPU/WASM으로 재시도:", gpuError);
+        setStatus("WebGPU 처리 실패. CPU/WASM으로 자동 재시도합니다.");
+        out = await cutoutModule.removeBackground(currentWorkingBlob, {
+          ...CUTOUT_CONFIG,
+          device: "cpu",
+          progress,
+        });
+      }
+    } else {
+      setStatus("WebGPU 미지원 환경입니다. CPU/WASM으로 처리합니다.");
+      out = await cutoutModule.removeBackground(currentWorkingBlob, {
+        ...CUTOUT_CONFIG,
+        device: "cpu",
+        progress,
+      });
+    }
+    await setWorkingPhoto(out, webGpuAvailable() ? "AI 누끼 적용됨 (WebGPU 우선)" : "AI 누끼 적용됨");
     $("restorePhotoBtn").disabled = false;
     setStatus("AI 누끼를 적용했습니다.", false, true);
   } catch (error) {
@@ -756,9 +787,13 @@ function bindInputs() {
 
   const excelDataLoadBtn = $("excelDataLoadBtn");
   const excelDataInput = $("excelDataInput");
+  const excelProgressSaveBtn = $("excelProgressSaveBtn");
   if (excelDataLoadBtn && excelDataInput) {
     excelDataLoadBtn.addEventListener("click", () => excelDataInput.click());
     excelDataInput.addEventListener("change", loadExcelDataPanel);
+  }
+  if (excelProgressSaveBtn) {
+    excelProgressSaveBtn.addEventListener("click", saveExcelProgressState);
   }
 
   $("excelInput").addEventListener("change", prepareBatch);
@@ -777,26 +812,66 @@ function excelNaturalCompare(a, b) {
   return aa.localeCompare(bb, "ko-KR", { numeric: true, sensitivity: "base" });
 }
 
+function getFilteredExcelRows() {
+  return loadedExcelRows.filter(item =>
+    EXCEL_DATA_COLUMNS.every(col => {
+      const filter = String(excelDataFilters[col] || "").trim();
+      if (!filter) return true;
+      return String(item.row[col] ?? "").trim() === filter;
+    })
+  );
+}
+
+function getExcelFilterOptions(column) {
+  return [...new Set(
+    loadedExcelRows
+      .map(item => String(item.row[column] ?? "").trim())
+      .filter(Boolean)
+  )].sort(excelNaturalCompare);
+}
+
 function renderExcelDataHead() {
   const head = $("excelDataHead");
   if (!head) return;
-  head.innerHTML = "<tr>" + EXCEL_DATA_COLUMNS.map(col => {
+
+  const titleRow = "<tr class=\"excel-sort-row\">" + EXCEL_DATA_COLUMNS.map(col => {
     const arrow = col === excelDataSortColumn ? (excelDataSortDesc ? " ▼" : " ▲") : "";
     return `<th data-col="${escapeHtml(col)}">${escapeHtml(col)}${arrow}</th>`;
   }).join("") + "</tr>";
-  head.querySelectorAll("th").forEach(th => {
+
+  const filterRow = "<tr class=\"excel-filter-row\">" + EXCEL_DATA_COLUMNS.map(col => {
+    const options = getExcelFilterOptions(col);
+    const selected = excelDataFilters[col] || "";
+    return `<th><select class="excel-column-filter" data-filter-col="${escapeHtml(col)}">
+      <option value="">전체</option>
+      ${options.map(value => `<option value="${escapeHtml(value)}" ${value === selected ? "selected" : ""}>${escapeHtml(value)}</option>`).join("")}
+    </select></th>`;
+  }).join("") + "</tr>";
+
+  head.innerHTML = titleRow + filterRow;
+
+  head.querySelectorAll(".excel-sort-row th").forEach(th => {
     th.addEventListener("click", () => sortExcelDataPanel(th.dataset.col));
+  });
+  head.querySelectorAll(".excel-column-filter").forEach(select => {
+    select.addEventListener("change", (event) => {
+      const col = event.target.dataset.filterCol;
+      excelDataFilters[col] = event.target.value;
+      renderExcelDataBody();
+      updateExcelDataStatus();
+    });
   });
 }
 
 function renderExcelDataBody() {
   const body = $("excelDataBody");
   if (!body) return;
-  if (!loadedExcelRows.length) {
-    body.innerHTML = '<tr class="excel-data-empty"><td colspan="6">불러온 엑셀 데이터가 없습니다.</td></tr>';
+  const visibleRows = getFilteredExcelRows();
+  if (!visibleRows.length) {
+    body.innerHTML = '<tr class="excel-data-empty"><td colspan="6">조건에 맞는 데이터가 없습니다.</td></tr>';
     return;
   }
-  body.innerHTML = loadedExcelRows.map(item => {
+  body.innerHTML = visibleRows.map(item => {
     const cls = [
       item.done ? "done" : "",
       item.id === selectedExcelDataId ? "selected" : "",
@@ -814,6 +889,81 @@ function renderExcelDataBody() {
       toggleExcelDataDone(tr.dataset.id);
     });
   });
+}
+
+function updateExcelDataStatus(message = "") {
+  const el = $("excelDataStatus");
+  if (!el) return;
+  if (message) {
+    el.textContent = message;
+    return;
+  }
+  const visible = getFilteredExcelRows().length;
+  const done = loadedExcelRows.filter(item => item.done).length;
+  const activeFilters = EXCEL_DATA_COLUMNS.filter(col => excelDataFilters[col]).length;
+  el.textContent = `표시 ${visible}/${loadedExcelRows.length}행 · 완료 ${done}행${activeFilters ? ` · 필터 ${activeFilters}개 적용` : ""}`;
+}
+
+function saveExcelProgressState() {
+  try {
+    const payload = {
+      version: 1,
+      savedAt: new Date().toISOString(),
+      rows: loadedExcelRows,
+      selectedExcelDataId,
+      sortColumn: excelDataSortColumn,
+      sortDesc: excelDataSortDesc,
+      filters: excelDataFilters,
+      hint: $("excelDataHint")?.textContent || "",
+    };
+    localStorage.setItem(EXCEL_PROGRESS_STORAGE_KEY, JSON.stringify(payload));
+    updateExcelDataStatus("진행 상태를 이 브라우저에 저장했습니다.");
+  } catch (error) {
+    updateExcelDataStatus("진행 상태 저장 실패: " + error.message);
+  }
+}
+
+function restoreExcelProgressState() {
+  try {
+    const raw = localStorage.getItem(EXCEL_PROGRESS_STORAGE_KEY);
+    if (!raw) return false;
+    const payload = JSON.parse(raw);
+    if (!payload || !Array.isArray(payload.rows) || !payload.rows.length) return false;
+
+    loadedExcelRows = payload.rows;
+    selectedExcelDataId = payload.selectedExcelDataId || null;
+    excelDataSortColumn = payload.sortColumn || null;
+    excelDataSortDesc = !!payload.sortDesc;
+    excelDataFilters = {
+      ...Object.fromEntries(EXCEL_DATA_COLUMNS.map(col => [col, ""])),
+      ...(payload.filters || {}),
+    };
+
+    if (excelDataSortColumn) {
+      const nonempty = [];
+      const empty = [];
+      loadedExcelRows.forEach(item => {
+        const value = String(item.row?.[excelDataSortColumn] ?? "").trim();
+        (value ? nonempty : empty).push(item);
+      });
+      nonempty.sort((a, b) => {
+        const cmp = excelNaturalCompare(a.row[excelDataSortColumn], b.row[excelDataSortColumn]);
+        return excelDataSortDesc ? -cmp : cmp;
+      });
+      loadedExcelRows = nonempty.concat(empty);
+    }
+
+    renderExcelDataHead();
+    renderExcelDataBody();
+    if ($("excelDataHint")) {
+      $("excelDataHint").textContent = payload.hint || `저장된 작업 상태 복원 · ${loadedExcelRows.length}행`;
+    }
+    updateExcelDataStatus("이전 작업 상태를 복원했습니다.");
+    return true;
+  } catch (error) {
+    console.warn("진행 상태 복원 실패:", error);
+    return false;
+  }
 }
 
 function sortExcelDataPanel(column) {
@@ -837,8 +987,7 @@ function sortExcelDataPanel(column) {
   loadedExcelRows = nonempty.concat(empty);
   renderExcelDataHead();
   renderExcelDataBody();
-  $("excelDataStatus").textContent =
-    `엑셀 데이터 정렬: ${column} · ${excelDataSortDesc ? "내림차순" : "오름차순"}`;
+  updateExcelDataStatus(`엑셀 데이터 정렬: ${column} · ${excelDataSortDesc ? "내림차순" : "오름차순"}`);
 }
 
 function selectExcelDataRow(id, apply = true) {
@@ -879,8 +1028,9 @@ function toggleExcelDataDone(id) {
   if (!item) return;
   item.done = !item.done;
   renderExcelDataBody();
-  $("excelDataStatus").textContent =
-    `${item.done ? "제작 완료 표시" : "제작 완료 표시 해제"}: ${item.row["저장파일명"] || item.row["이름"] || id}`;
+  updateExcelDataStatus(
+    `${item.done ? "제작 완료 표시" : "제작 완료 표시 해제"}: ${item.row["저장파일명"] || item.row["이름"] || id}`
+  );
 }
 
 function markSelectedExcelDataDone() {
@@ -889,6 +1039,7 @@ function markSelectedExcelDataDone() {
   if (!item) return;
   item.done = true;
   renderExcelDataBody();
+  updateExcelDataStatus();
 }
 
 async function loadExcelDataPanel(event) {
@@ -935,12 +1086,12 @@ async function loadExcelDataPanel(event) {
     excelDataSortColumn = null;
     excelDataSortDesc = false;
     selectedExcelDataId = null;
+    excelDataFilters = Object.fromEntries(EXCEL_DATA_COLUMNS.map(col => [col, ""]));
     renderExcelDataHead();
     renderExcelDataBody();
     $("excelDataHint").textContent =
       `${file.name} · ${loadedExcelRows.length}행 불러옴 · 열 제목 클릭=정렬 / 한 번 클릭=설정 적용 / 더블클릭=제작 완료 토글`;
-    $("excelDataStatus").textContent =
-      `엑셀 데이터 ${loadedExcelRows.length}행을 불러왔습니다. 적용할 행을 클릭하세요.`;
+    updateExcelDataStatus(`엑셀 데이터 ${loadedExcelRows.length}행을 불러왔습니다. 적용할 행을 클릭하세요.`);
   } catch (error) {
     loadedExcelRows = [];
     selectedExcelDataId = null;
@@ -1104,6 +1255,7 @@ async function init() {
     bindInputs();
     renderExcelDataHead();
     renderExcelDataBody();
+    restoreExcelProgressState();
     await callWorker("init");
     runtimeReady = true;
     runtimeBadge.textContent = "Python 준비 완료";
