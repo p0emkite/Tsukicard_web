@@ -49,6 +49,11 @@
           <div class="range-row"><label for="focusYRange">세로 위치</label><input id="focusYRange" type="range" min="-1000" max="1000" step="1" /><input id="focusYNumber" class="numberbox" type="number" min="-1000" max="1000" step="1" /></div>
           <div class="range-row"><label for="zoomRange">확대</label><input id="zoomRange" type="range" min="40" max="500" step="1" /><div class="number-with-suffix"><input id="zoomNumber" class="numberbox" type="number" min="40" max="500" step="1" /><span>%</span></div></div>
           <div class="inline-options"><label class="check"><input id="glowCheck" type="checkbox" checked /> 피사체 외부 광선</label><button id="resetCropBtn" class="ghost" type="button">이미지 조정 초기화</button></div>
+          <div class="button-row auto-subject-row">
+            <button id="autoFaceBtn" class="secondary" type="button" disabled>얼굴 자동 정렬</button>
+            <button id="autoScaleBtn" class="secondary" type="button" disabled>인물 크기 자동 맞춤</button>
+          </div>
+          <small>브라우저 얼굴 감지를 우선 사용하고, 미지원 환경에서는 누끼 실루엣 상단을 기준으로 자동 계산합니다.</small>
         </div>
       </details>
 
@@ -109,6 +114,7 @@
         <div id="emptyPreview" class="empty-preview">피사체 이미지를 선택하면<br />여기에 카드가 표시됩니다.</div>
       </div>
       <p class="preview-help">미리보기 위에서 <b>드래그</b>: 위치 이동 · <b>마우스 휠</b>: 확대/축소</p>
+      <div id="subjectQuality" class="subject-quality info">자동 점검: 이미지를 선택하면 얼굴 크기 · 잘림 · 누끼 상태를 확인합니다.</div>
       <div class="save-box">
         <label for="filenameInput">저장 파일명</label>
         <div class="file-row">
@@ -147,17 +153,19 @@
         <div class="excel-data-actions">
           <button id="excelProgressSaveBtn" class="ghost" type="button">진행 상태 저장</button>
           <button id="excelDataLoadBtn" class="secondary" type="button">엑셀 데이터 불러오기</button>
+          <button id="excelDataImageFolderBtn" class="ghost" type="button">이미지 폴더 연결</button>
           <input id="excelDataInput" type="file" accept=".xlsx,.xls" hidden />
+          <input id="excelDataImageFolderInput" type="file" accept="image/*" multiple webkitdirectory directory hidden />
         </div>
       </div>
       <div id="excelDataStatus" class="status compact-status">
-        열 제목 클릭=정렬 · 한 번 클릭=설정 적용 · 더블클릭=제작 완료 토글
+        열 제목 클릭=정렬 · 한 번 클릭=설정+사진 미리보기 · 더블클릭=제작 완료 토글
       </div>
       <div id="excelDataTableWrap" class="excel-data-table-wrap">
         <table class="excel-data-table">
           <thead id="excelDataHead"></thead>
           <tbody id="excelDataBody">
-            <tr class="excel-data-empty"><td colspan="6">불러온 엑셀 데이터가 없습니다.</td></tr>
+            <tr class="excel-data-empty"><td colspan="7">불러온 엑셀 데이터가 없습니다.</td></tr>
           </tbody>
         </table>
       </div>
@@ -165,6 +173,6 @@
   </div>
 
   <footer><p>렌더링은 사용자 브라우저 안에서 실행됩니다. 카드 원본 이미지는 별도 서버로 업로드하지 않습니다.</p></footer>
-  <script type="module" src="./app.js?v=20261003-4"></script>
+  <script type="module" src="./app.js?v=20261007-1"></script>
 </body>
 </html>

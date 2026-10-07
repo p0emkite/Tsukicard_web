@@ -28,13 +28,16 @@ let dragState = null;
 let batchRows = [];
 let batchImageFiles = [];
 let cutoutModule = null;
-const EXCEL_DATA_COLUMNS = ["시즌", "등급", "구단", "이름", "포지션", "저장파일명"];
+const EXCEL_REQUIRED_COLUMNS = ["시즌", "등급", "구단", "이름", "포지션", "저장파일명"];
+const EXCEL_DATA_COLUMNS = ["시즌", "등급", "구단", "이름", "포지션", "이미지명", "저장파일명"];
 let loadedExcelRows = [];
 let excelDataSortColumn = null;
 let excelDataSortDesc = false;
 let selectedExcelDataId = null;
 let excelDataFilters = Object.fromEntries(EXCEL_DATA_COLUMNS.map(col => [col, ""]));
 let saveDirectoryHandle = null;
+let excelDataImageFiles = [];
+let excelRowPreviewSeq = 0;
 
 // Browser-side realtime preview state
 const liveAssetCache = new Map();
@@ -43,6 +46,9 @@ let livePreviewRaf = 0;
 let finalPreviewTimer = null;
 let liveFontsReady = null;
 let liveInteractionActive = false;
+let liveSubjectMeta = null;
+let currentSubjectAnalysis = null;
+const AUTO_FACE_TARGET = { x: 0.50, y: 0.31, width: 0.245 };
 
 const CUTOUT_CONFIG = {
   model: "isnet",
@@ -252,6 +258,9 @@ function loadLiveImage(path) {
 async function prepareLiveSubject(blob) {
   if (!blob) {
     liveSubjectCanvas = null;
+    liveSubjectMeta = null;
+    currentSubjectAnalysis = null;
+    updateSubjectQualityUi();
     return;
   }
   const bitmap = await createImageBitmap(blob);
@@ -262,12 +271,17 @@ async function prepareLiveSubject(blob) {
   tctx.drawImage(bitmap, 0, 0);
 
   let sx = 0, sy = 0, sw = temp.width, sh = temp.height;
+  let foregroundCount = 0, semiTransparentCount = 0, transparentCount = 0;
+  let minX = temp.width, minY = temp.height, maxX = -1, maxY = -1;
   try {
     const pixels = tctx.getImageData(0, 0, temp.width, temp.height).data;
-    let minX = temp.width, minY = temp.height, maxX = -1, maxY = -1;
     for (let y = 0; y < temp.height; y++) {
       for (let x = 0; x < temp.width; x++) {
-        if (pixels[(y * temp.width + x) * 4 + 3] > 0) {
+        const alpha = pixels[(y * temp.width + x) * 4 + 3];
+        if (alpha < 250) transparentCount++;
+        if (alpha > 12) {
+          foregroundCount++;
+          if (alpha < 245) semiTransparentCount++;
           if (x < minX) minX = x;
           if (y < minY) minY = y;
           if (x > maxX) maxX = x;
@@ -280,12 +294,199 @@ async function prepareLiveSubject(blob) {
     }
   } catch (_) {}
 
+  const totalPixels = Math.max(1, temp.width * temp.height);
+  const bboxPixels = Math.max(1, sw * sh);
+  const hasCutout = transparentCount / totalPixels > 0.02;
+  liveSubjectMeta = {
+    sourceWidth: temp.width, sourceHeight: temp.height,
+    cropX: sx, cropY: sy, cropWidth: sw, cropHeight: sh,
+    hasCutout,
+    foregroundAreaRatio: foregroundCount / totalPixels,
+    fillRatio: foregroundCount / bboxPixels,
+    semiTransparentRatio: foregroundCount ? semiTransparentCount / foregroundCount : 0,
+    touchesTop: sy <= 2,
+    touchesLeft: sx <= 2,
+    touchesRight: sx + sw >= temp.width - 2,
+    touchesBottom: sy + sh >= temp.height - 2,
+  };
+
   const out = document.createElement("canvas");
   out.width = sw;
   out.height = sh;
   out.getContext("2d").drawImage(temp, sx, sy, sw, sh, 0, 0, sw, sh);
-  bitmap.close?.();
   liveSubjectCanvas = out;
+  currentSubjectAnalysis = await analyzeSubjectCanvas(temp, out, liveSubjectMeta);
+  updateSubjectQualityUi();
+  bitmap.close?.();
+}
+
+function median(values) {
+  if (!values.length) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+async function detectNativeFace(sourceCanvas, meta) {
+  if (typeof FaceDetector === "undefined") return null;
+  try {
+    const detector = new FaceDetector({ fastMode: true, maxDetectedFaces: 5 });
+    const faces = await detector.detect(sourceCanvas);
+    if (!faces?.length) return null;
+    const face = [...faces].sort((a, b) =>
+      (b.boundingBox.width * b.boundingBox.height) - (a.boundingBox.width * a.boundingBox.height)
+    )[0];
+    const b = face.boundingBox;
+    const x = clamp(b.x - meta.cropX, 0, meta.cropWidth - 1);
+    const y = clamp(b.y - meta.cropY, 0, meta.cropHeight - 1);
+    const width = clamp(b.width, 1, meta.cropWidth - x);
+    const height = clamp(b.height, 1, meta.cropHeight - y);
+    return { x, y, width, height, source: "native" };
+  } catch (error) {
+    console.warn("브라우저 얼굴 감지 실패, 실루엣 기준으로 전환:", error);
+    return null;
+  }
+}
+
+function estimateFaceFromSubject(canvas, meta) {
+  const w = canvas.width, h = canvas.height;
+  if (!w || !h) return null;
+
+  if (!meta?.hasCutout) {
+    const width = w * 0.26;
+    return { x: w * 0.5 - width / 2, y: h * 0.12, width, height: width * 1.2, source: "heuristic" };
+  }
+
+  try {
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    const data = ctx.getImageData(0, 0, w, h).data;
+    const rowInfo = [];
+    const minCount = Math.max(3, Math.round(w * 0.012));
+    let firstY = -1;
+
+    for (let y = 0; y < Math.min(h, Math.round(h * 0.42)); y++) {
+      let minX = w, maxX = -1, count = 0;
+      for (let x = 0; x < w; x++) {
+        if (data[(y * w + x) * 4 + 3] > 40) {
+          count++;
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+        }
+      }
+      if (count >= minCount) {
+        if (firstY < 0) firstY = y;
+        rowInfo.push({ y, width: maxX - minX + 1, center: (minX + maxX) / 2 });
+      }
+    }
+
+    if (firstY >= 0) {
+      const endY = firstY + Math.max(8, Math.round(h * 0.16));
+      const headRows = rowInfo.filter(r => r.y <= endY && r.width > 2);
+      if (headRows.length) {
+        const width = clamp(median(headRows.map(r => r.width)) * 0.74, w * 0.08, w * 0.48);
+        const height = width * 1.22;
+        const cx = median(headRows.map(r => r.center)) || w / 2;
+        return {
+          x: clamp(cx - width / 2, 0, Math.max(0, w - width)),
+          y: clamp(firstY + width * 0.08, 0, Math.max(0, h - height)),
+          width, height, source: "heuristic",
+        };
+      }
+    }
+  } catch (error) {
+    console.warn("실루엣 얼굴 추정 실패:", error);
+  }
+
+  const width = w * 0.24;
+  return { x: w * 0.5 - width / 2, y: h * 0.08, width, height: width * 1.22, source: "heuristic" };
+}
+
+async function analyzeSubjectCanvas(sourceCanvas, croppedCanvas, meta) {
+  const faceBox = await detectNativeFace(sourceCanvas, meta) || estimateFaceFromSubject(croppedCanvas, meta);
+  const warnings = [];
+
+  if (faceBox) {
+    const faceSourceWidthRatio = faceBox.width / Math.max(1, meta.cropWidth);
+    const faceOriginalWidthRatio = faceBox.width / Math.max(1, meta.sourceWidth);
+    if (faceOriginalWidthRatio < 0.075 || faceSourceWidthRatio < 0.09) warnings.push("얼굴이 원본에서 작음");
+    if (faceBox.y <= 2 || faceBox.x <= 2 || faceBox.x + faceBox.width >= meta.cropWidth - 2) warnings.push("얼굴 잘림 가능성");
+  } else {
+    warnings.push("얼굴 위치를 추정하지 못함");
+  }
+
+  if (meta.hasCutout) {
+    if (meta.touchesTop || meta.touchesLeft || meta.touchesRight) warnings.push("피사체가 원본 가장자리에 닿음");
+    if (meta.fillRatio < 0.16) warnings.push("누끼 일부 누락 가능성");
+    else if (meta.semiTransparentRatio > 0.30) warnings.push("누끼 가장자리 검수 권장");
+  }
+
+  return {
+    faceBox,
+    warnings: [...new Set(warnings)],
+    faceMode: faceBox?.source === "native" ? "얼굴 감지" : "실루엣 추정",
+    hasCutout: !!meta.hasCutout,
+  };
+}
+
+function updateSubjectQualityUi() {
+  const box = $("subjectQuality");
+  if (!box) return;
+  if (!currentWorkingBlob || !currentSubjectAnalysis) {
+    box.className = "subject-quality info";
+    box.textContent = "자동 점검: 이미지를 선택하면 얼굴 크기 · 잘림 · 누끼 상태를 확인합니다.";
+    return;
+  }
+  const analysis = currentSubjectAnalysis;
+  if (!analysis.warnings.length) {
+    box.className = "subject-quality ok";
+    box.textContent = `자동 점검: 양호 · ${analysis.faceMode}${analysis.hasCutout ? " · 투명 누끼 확인" : ""}`;
+    return;
+  }
+  box.className = "subject-quality warning";
+  box.textContent = `자동 점검: ⚠ ${analysis.warnings.join(" · ")} · ${analysis.faceMode}`;
+}
+
+function autoPlaceSubject(mode = "align") {
+  if (!liveSubjectCanvas || !currentSubjectAnalysis?.faceBox) {
+    setStatus("자동 배치에 사용할 얼굴/피사체 정보를 찾지 못했습니다.", true);
+    return;
+  }
+  const tpl = currentTemplate();
+  if (!tpl) return;
+  const native = tpl.native_canvas || { width: 800, height: 1200 };
+  const box = tpl.subject_box || { x: 0, y: 0, width: native.width, height: native.height };
+  const face = currentSubjectAnalysis.faceBox;
+  const baseScale = Math.min(
+    box.width / Math.max(1, liveSubjectCanvas.width),
+    box.height / Math.max(1, liveSubjectCanvas.height)
+  );
+
+  let zoom = numValue("zoomNumber", 100);
+  if (mode === "size") {
+    const targetFaceWidth = native.width * AUTO_FACE_TARGET.width;
+    zoom = clamp((targetFaceWidth / Math.max(1, face.width * baseScale)) * 100, 40, 500);
+    setLinkedRange("zoom", Number(zoom.toFixed(1)));
+  }
+
+  const scale = baseScale * Math.max(0.1, zoom / 100);
+  const dw = liveSubjectCanvas.width * scale, dh = liveSubjectCanvas.height * scale;
+  const targetX = native.width * AUTO_FACE_TARGET.x, targetY = native.height * AUTO_FACE_TARGET.y;
+  const desiredLeft = targetX - (face.x + face.width / 2) * scale;
+  const desiredTop = targetY - (face.y + face.height / 2) * scale;
+  const denomX = box.width - dw, denomY = box.height - dh;
+  const focusX = Math.abs(denomX) < 0.001 ? 50 : ((desiredLeft - box.x) / denomX) * 100;
+  const focusY = Math.abs(denomY) < 0.001 ? 50 : ((desiredTop - box.y) / denomY) * 100;
+
+  setLinkedRange("focusX", Number(clamp(focusX, -1000, 1000).toFixed(1)));
+  setLinkedRange("focusY", Number(clamp(focusY, -1000, 1000).toFixed(1)));
+  queueLivePreview();
+  scheduleFinalPreview(0);
+  setStatus(
+    mode === "size"
+      ? `인물 크기와 얼굴 위치를 자동 보정했습니다. (${currentSubjectAnalysis.faceMode})`
+      : `얼굴 위치를 자동 정렬했습니다. (${currentSubjectAnalysis.faceMode})`,
+    false, true
+  );
 }
 
 async function warmLivePreviewAssets() {
@@ -618,6 +819,8 @@ async function setWorkingPhoto(blob, label = "이미지") {
   await prepareLiveSubject(blob);
   await warmLivePreviewAssets();
   $("cutoutBtn").disabled = false;
+  $("autoFaceBtn").disabled = false;
+  $("autoScaleBtn").disabled = false;
   $("restorePhotoBtn").disabled = !currentOriginalFile || blob === currentOriginalFile;
   $("generateBtn").disabled = false;
   $("previewHint").textContent = label;
@@ -871,6 +1074,8 @@ function bindInputs() {
     $("restorePhotoBtn").disabled = true;
   });
   $("cutoutBtn").addEventListener("click", doCutout);
+  $("autoFaceBtn").addEventListener("click", () => autoPlaceSubject("align"));
+  $("autoScaleBtn").addEventListener("click", () => autoPlaceSubject("size"));
   $("generateBtn").addEventListener("click", generateAndDownload);
   const savePathBtn = $("savePathBtn");
   if (savePathBtn) savePathBtn.addEventListener("click", chooseSaveDirectory);
@@ -902,6 +1107,8 @@ function bindInputs() {
 
   const excelDataLoadBtn = $("excelDataLoadBtn");
   const excelDataInput = $("excelDataInput");
+  const excelDataImageFolderBtn = $("excelDataImageFolderBtn");
+  const excelDataImageFolderInput = $("excelDataImageFolderInput");
   const excelProgressSaveBtn = $("excelProgressSaveBtn");
   if (excelDataLoadBtn && excelDataInput) {
     excelDataLoadBtn.addEventListener("click", () => excelDataInput.click());
@@ -909,6 +1116,17 @@ function bindInputs() {
   }
   if (excelProgressSaveBtn) {
     excelProgressSaveBtn.addEventListener("click", saveExcelProgressState);
+  }
+  if (excelDataImageFolderBtn && excelDataImageFolderInput) {
+    excelDataImageFolderBtn.addEventListener("click", () => excelDataImageFolderInput.click());
+    excelDataImageFolderInput.addEventListener("change", () => {
+      excelDataImageFiles = [...(excelDataImageFolderInput.files || [])];
+      updateExcelDataStatus(
+        excelDataImageFiles.length
+          ? `이미지 폴더 연결: ${excelDataImageFiles.length}개 파일 · 행 클릭 시 사진까지 즉시 미리보기됩니다.`
+          : "이미지 폴더가 비어 있습니다."
+      );
+    });
   }
 
   $("excelInput").addEventListener("change", prepareBatch);
@@ -983,15 +1201,16 @@ function renderExcelDataBody() {
   if (!body) return;
   const visibleRows = getFilteredExcelRows();
   if (!visibleRows.length) {
-    body.innerHTML = '<tr class="excel-data-empty"><td colspan="6">조건에 맞는 데이터가 없습니다.</td></tr>';
+    body.innerHTML = `<tr class="excel-data-empty"><td colspan="${EXCEL_DATA_COLUMNS.length}">조건에 맞는 데이터가 없습니다.</td></tr>`;
     return;
   }
   body.innerHTML = visibleRows.map(item => {
     const cls = [
       item.done ? "done" : "",
+      item.warning ? "warning" : "",
       item.id === selectedExcelDataId ? "selected" : "",
     ].filter(Boolean).join(" ");
-    return `<tr data-id="${item.id}" class="${cls}">
+    return `<tr data-id="${item.id}" class="${cls}" title="${escapeHtml(item.warning || "")}">
       ${EXCEL_DATA_COLUMNS.map(col => `<td data-col="${escapeHtml(col)}">${escapeHtml(item.row[col] ?? "")}</td>`).join("")}
     </tr>`;
   }).join("");
@@ -1110,10 +1329,27 @@ function selectExcelDataRow(id, apply = true) {
   if (!item) return;
   selectedExcelDataId = id;
   renderExcelDataBody();
-  if (apply) applyExcelDataRow(item);
+  if (apply) void applyExcelDataRow(item);
 }
 
-function applyExcelDataRow(item) {
+function findExcelDataImage(name, row = {}) {
+  const files = excelDataImageFiles.length ? excelDataImageFiles : batchImageFiles;
+  if (!files.length) return null;
+  const wanted = normalizePath(name);
+  if (wanted) {
+    const exact = files.filter(f => normalizePath(f.webkitRelativePath || f.name).endsWith(wanted));
+    if (exact.length === 1) return exact[0];
+    const base = wanted.split("/").pop();
+    const byBase = files.filter(f => f.name.toLowerCase() === base);
+    if (byBase.length === 1) return byBase[0];
+  }
+  const playerName = String(row["이름"] || "").trim().toLocaleLowerCase("ko-KR");
+  if (!playerName) return null;
+  const byStem = files.filter(f => f.name.replace(/\.[^.]+$/, "").trim().toLocaleLowerCase("ko-KR") === playerName);
+  return byStem.length === 1 ? byStem[0] : null;
+}
+
+async function applyExcelDataRow(item) {
   const r = item.row;
   const grade = String(r["등급"] || "").trim();
   if (grade && templates.has(grade)) {
@@ -1133,9 +1369,43 @@ function applyExcelDataRow(item) {
   const requested = String(r["저장파일명"] || "").trim();
   $("filenameInput").value = requested ? sanitizeFilename(requested) : filenameFromCurrent();
 
+  const seq = ++excelRowPreviewSeq;
+  const requestedImage = String(r["이미지명"] || "").trim();
+  const image = findExcelDataImage(requestedImage, r);
+
+  if (image && currentOriginalFile !== image) {
+    currentOriginalFile = image;
+    try {
+      await setWorkingPhoto(image, `${image.name} · ${r["이름"] || "선택 행"}`);
+      if (seq !== excelRowPreviewSeq) return;
+      $("restorePhotoBtn").disabled = true;
+      item.warning = currentSubjectAnalysis?.warnings?.join(" · ") || "";
+      updateExcelDataStatus(
+        `즉시 미리보기: ${r["이름"] || image.name}${item.warning ? ` · ⚠ ${item.warning}` : ""}`
+      );
+      return;
+    } catch (error) {
+      updateExcelDataStatus(`사진 미리보기 실패: ${error.message}`);
+      return;
+    }
+  }
+
   scheduleRender();
-  $("excelDataStatus").textContent =
-    `설정 적용: ${r["이름"] || r["저장파일명"] || "선택 행"}`;
+  if (image) {
+    item.warning = currentSubjectAnalysis?.warnings?.join(" · ") || item.warning || "";
+    updateExcelDataStatus(
+      `설정 적용 + 사진 유지: ${r["이름"] || image.name}${item.warning ? ` · ⚠ ${item.warning}` : ""}`
+    );
+  } else if (requestedImage) {
+    updateExcelDataStatus(`설정 적용: ${r["이름"] || "선택 행"} · 이미지를 찾지 못함: ${requestedImage}`);
+  } else {
+    const files = excelDataImageFiles.length || batchImageFiles.length;
+    updateExcelDataStatus(
+      files
+        ? `설정 적용: ${r["이름"] || r["저장파일명"] || "선택 행"} · 이미지명 없음`
+        : `설정 적용: ${r["이름"] || r["저장파일명"] || "선택 행"} · 이미지 폴더를 연결하면 사진도 즉시 미리보기됩니다.`
+    );
+  }
 }
 
 function toggleExcelDataDone(id) {
@@ -1172,19 +1442,22 @@ async function loadExcelDataPanel(event) {
     let indices = null;
     for (let i = 0; i < Math.min(grid.length, 20); i++) {
       const labels = grid[i].map(x => String(x ?? "").trim());
-      if (EXCEL_DATA_COLUMNS.every(col => labels.includes(col))) {
+      if (EXCEL_REQUIRED_COLUMNS.every(col => labels.includes(col))) {
         headerRow = i;
-        indices = EXCEL_DATA_COLUMNS.map(col => labels.indexOf(col));
+        indices = Object.fromEntries(EXCEL_DATA_COLUMNS.map(col => [col, labels.indexOf(col)]));
         break;
       }
     }
-    if (headerRow < 0) throw new Error("필요한 열을 찾지 못했습니다: " + EXCEL_DATA_COLUMNS.join(" | "));
+    if (headerRow < 0) throw new Error("필요한 열을 찾지 못했습니다: " + EXCEL_REQUIRED_COLUMNS.join(" | "));
 
     loadedExcelRows = [];
     for (let r = headerRow + 1; r < grid.length; r++) {
       const raw = grid[r] || [];
       const row = {};
-      EXCEL_DATA_COLUMNS.forEach((col, i) => row[col] = String(raw[indices[i]] ?? "").trim());
+      EXCEL_DATA_COLUMNS.forEach(col => {
+        const idx = indices[col];
+        row[col] = idx >= 0 ? String(raw[idx] ?? "").trim() : "";
+      });
       if (!EXCEL_DATA_COLUMNS.some(col => row[col])) continue;
       // 양식 2행의 [예시] 행은 로컬/웹 일괄 생성 규칙과 동일하게 제외
       if (r === headerRow + 1 && String(row["시즌"]).startsWith("[예시]")) continue;
@@ -1205,7 +1478,7 @@ async function loadExcelDataPanel(event) {
     renderExcelDataHead();
     renderExcelDataBody();
     $("excelDataHint").textContent =
-      `${file.name} · ${loadedExcelRows.length}행 불러옴 · 열 제목 클릭=정렬 / 한 번 클릭=설정 적용 / 더블클릭=제작 완료 토글`;
+      `${file.name} · ${loadedExcelRows.length}행 불러옴 · 한 번 클릭=설정+사진 미리보기 / 더블클릭=제작 완료 토글`;
     updateExcelDataStatus(`엑셀 데이터 ${loadedExcelRows.length}행을 불러왔습니다. 적용할 행을 클릭하세요.`);
   } catch (error) {
     loadedExcelRows = [];
