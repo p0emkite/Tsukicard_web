@@ -51,7 +51,7 @@ let currentSubjectAnalysis = null;
 const AUTO_FACE_TARGET = { x: 0.50, width: 0.218 };
 // 피사체 최상단을 좌측 상단 RKBO 원형 로고의 최하단 높이에 맞춘다.
 // 기준 캔버스 800×1200에서 약 y=198.
-const AUTO_SUBJECT_TOP_TARGET_RATIO = 198 / 1200;
+const AUTO_SUBJECT_TOP_TARGET_RATIO = 190 / 1200;
 
 const CUTOUT_CONFIG = {
   model: "isnet",
