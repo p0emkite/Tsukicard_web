@@ -48,7 +48,10 @@ let liveFontsReady = null;
 let liveInteractionActive = false;
 let liveSubjectMeta = null;
 let currentSubjectAnalysis = null;
-const AUTO_FACE_TARGET = { x: 0.50, y: 0.31, width: 0.245 };
+const AUTO_FACE_TARGET = { x: 0.50, width: 0.245 };
+// 피사체 최상단을 좌측 상단 RKBO 원형 로고의 최하단 높이에 맞춘다.
+// 기준 캔버스 800×1200에서 약 y=198.
+const AUTO_SUBJECT_TOP_TARGET_RATIO = 198 / 1200;
 
 const CUTOUT_CONFIG = {
   model: "isnet",
@@ -470,9 +473,15 @@ function autoPlaceSubject(mode = "align") {
 
   const scale = baseScale * Math.max(0.1, zoom / 100);
   const dw = liveSubjectCanvas.width * scale, dh = liveSubjectCanvas.height * scale;
-  const targetX = native.width * AUTO_FACE_TARGET.x, targetY = native.height * AUTO_FACE_TARGET.y;
+
+  // 가로는 얼굴 중심을 카드 중앙에 맞춘다.
+  const targetX = native.width * AUTO_FACE_TARGET.x;
   const desiredLeft = targetX - (face.x + face.width / 2) * scale;
-  const desiredTop = targetY - (face.y + face.height / 2) * scale;
+
+  // 세로는 얼굴 중심이 아니라 피사체의 맨 윗부분을 기준으로 맞춘다.
+  // liveSubjectCanvas는 알파 bbox로 이미 잘려 있어 y=0이 곧 피사체 최상단이다.
+  const desiredTop = native.height * AUTO_SUBJECT_TOP_TARGET_RATIO;
+
   const denomX = box.width - dw, denomY = box.height - dh;
   const focusX = Math.abs(denomX) < 0.001 ? 50 : ((desiredLeft - box.x) / denomX) * 100;
   const focusY = Math.abs(denomY) < 0.001 ? 50 : ((desiredTop - box.y) / denomY) * 100;
@@ -483,8 +492,8 @@ function autoPlaceSubject(mode = "align") {
   scheduleFinalPreview(0);
   setStatus(
     mode === "size"
-      ? `인물 크기와 얼굴 위치를 자동 보정했습니다. (${currentSubjectAnalysis.faceMode})`
-      : `얼굴 위치를 자동 정렬했습니다. (${currentSubjectAnalysis.faceMode})`,
+      ? `인물 크기를 기준 크기로 맞추고 피사체 상단을 RKBO 로고 하단 높이에 정렬했습니다. (${currentSubjectAnalysis.faceMode})`
+      : `피사체 상단을 RKBO 로고 하단 높이에 정렬했습니다. (${currentSubjectAnalysis.faceMode})`,
     false, true
   );
 }
