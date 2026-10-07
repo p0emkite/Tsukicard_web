@@ -28,7 +28,8 @@ let dragState = null;
 let batchRows = [];
 let batchImageFiles = [];
 let cutoutModule = null;
-const EXCEL_DATA_COLUMNS = ["시즌", "등급", "구단", "이름", "포지션", "저장파일명"];
+const EXCEL_REQUIRED_COLUMNS = ["시즌", "등급", "구단", "이름", "포지션", "저장파일명"];
+const EXCEL_DATA_COLUMNS = ["시즌", "등급", "구단", "이름", "포지션", "이미지명", "저장파일명"];
 let loadedExcelRows = [];
 let excelDataSortColumn = null;
 let excelDataSortDesc = false;
@@ -1106,6 +1107,8 @@ function bindInputs() {
 
   const excelDataLoadBtn = $("excelDataLoadBtn");
   const excelDataInput = $("excelDataInput");
+  const excelDataImageFolderBtn = $("excelDataImageFolderBtn");
+  const excelDataImageFolderInput = $("excelDataImageFolderInput");
   const excelProgressSaveBtn = $("excelProgressSaveBtn");
   if (excelDataLoadBtn && excelDataInput) {
     excelDataLoadBtn.addEventListener("click", () => excelDataInput.click());
@@ -1113,6 +1116,17 @@ function bindInputs() {
   }
   if (excelProgressSaveBtn) {
     excelProgressSaveBtn.addEventListener("click", saveExcelProgressState);
+  }
+  if (excelDataImageFolderBtn && excelDataImageFolderInput) {
+    excelDataImageFolderBtn.addEventListener("click", () => excelDataImageFolderInput.click());
+    excelDataImageFolderInput.addEventListener("change", () => {
+      excelDataImageFiles = [...(excelDataImageFolderInput.files || [])];
+      updateExcelDataStatus(
+        excelDataImageFiles.length
+          ? `이미지 폴더 연결: ${excelDataImageFiles.length}개 파일 · 행 클릭 시 사진까지 즉시 미리보기됩니다.`
+          : "이미지 폴더가 비어 있습니다."
+      );
+    });
   }
 
   $("excelInput").addEventListener("change", prepareBatch);
@@ -1187,7 +1201,7 @@ function renderExcelDataBody() {
   if (!body) return;
   const visibleRows = getFilteredExcelRows();
   if (!visibleRows.length) {
-    body.innerHTML = '<tr class="excel-data-empty"><td colspan="6">조건에 맞는 데이터가 없습니다.</td></tr>';
+    body.innerHTML = `<tr class="excel-data-empty"><td colspan="${EXCEL_DATA_COLUMNS.length}">조건에 맞는 데이터가 없습니다.</td></tr>`;
     return;
   }
   body.innerHTML = visibleRows.map(item => {
@@ -1314,10 +1328,27 @@ function selectExcelDataRow(id, apply = true) {
   if (!item) return;
   selectedExcelDataId = id;
   renderExcelDataBody();
-  if (apply) applyExcelDataRow(item);
+  if (apply) void applyExcelDataRow(item);
 }
 
-function applyExcelDataRow(item) {
+function findExcelDataImage(name, row = {}) {
+  const files = excelDataImageFiles.length ? excelDataImageFiles : batchImageFiles;
+  if (!files.length) return null;
+  const wanted = normalizePath(name);
+  if (wanted) {
+    const exact = files.filter(f => normalizePath(f.webkitRelativePath || f.name).endsWith(wanted));
+    if (exact.length === 1) return exact[0];
+    const base = wanted.split("/").pop();
+    const byBase = files.filter(f => f.name.toLowerCase() === base);
+    if (byBase.length === 1) return byBase[0];
+  }
+  const playerName = String(row["이름"] || "").trim().toLocaleLowerCase("ko-KR");
+  if (!playerName) return null;
+  const byStem = files.filter(f => f.name.replace(/\.[^.]+$/, "").trim().toLocaleLowerCase("ko-KR") === playerName);
+  return byStem.length === 1 ? byStem[0] : null;
+}
+
+async function applyExcelDataRow(item) {
   const r = item.row;
   const grade = String(r["등급"] || "").trim();
   if (grade && templates.has(grade)) {
@@ -1337,9 +1368,43 @@ function applyExcelDataRow(item) {
   const requested = String(r["저장파일명"] || "").trim();
   $("filenameInput").value = requested ? sanitizeFilename(requested) : filenameFromCurrent();
 
+  const seq = ++excelRowPreviewSeq;
+  const requestedImage = String(r["이미지명"] || "").trim();
+  const image = findExcelDataImage(requestedImage, r);
+
+  if (image && currentOriginalFile !== image) {
+    currentOriginalFile = image;
+    try {
+      await setWorkingPhoto(image, `${image.name} · ${r["이름"] || "선택 행"}`);
+      if (seq !== excelRowPreviewSeq) return;
+      $("restorePhotoBtn").disabled = true;
+      item.warning = currentSubjectAnalysis?.warnings?.join(" · ") || "";
+      updateExcelDataStatus(
+        `즉시 미리보기: ${r["이름"] || image.name}${item.warning ? ` · ⚠ ${item.warning}` : ""}`
+      );
+      return;
+    } catch (error) {
+      updateExcelDataStatus(`사진 미리보기 실패: ${error.message}`);
+      return;
+    }
+  }
+
   scheduleRender();
-  $("excelDataStatus").textContent =
-    `설정 적용: ${r["이름"] || r["저장파일명"] || "선택 행"}`;
+  if (image) {
+    item.warning = currentSubjectAnalysis?.warnings?.join(" · ") || item.warning || "";
+    updateExcelDataStatus(
+      `설정 적용 + 사진 유지: ${r["이름"] || image.name}${item.warning ? ` · ⚠ ${item.warning}` : ""}`
+    );
+  } else if (requestedImage) {
+    updateExcelDataStatus(`설정 적용: ${r["이름"] || "선택 행"} · 이미지를 찾지 못함: ${requestedImage}`);
+  } else {
+    const files = excelDataImageFiles.length || batchImageFiles.length;
+    updateExcelDataStatus(
+      files
+        ? `설정 적용: ${r["이름"] || r["저장파일명"] || "선택 행"} · 이미지명 없음`
+        : `설정 적용: ${r["이름"] || r["저장파일명"] || "선택 행"} · 이미지 폴더를 연결하면 사진도 즉시 미리보기됩니다.`
+    );
+  }
 }
 
 function toggleExcelDataDone(id) {
@@ -1376,19 +1441,22 @@ async function loadExcelDataPanel(event) {
     let indices = null;
     for (let i = 0; i < Math.min(grid.length, 20); i++) {
       const labels = grid[i].map(x => String(x ?? "").trim());
-      if (EXCEL_DATA_COLUMNS.every(col => labels.includes(col))) {
+      if (EXCEL_REQUIRED_COLUMNS.every(col => labels.includes(col))) {
         headerRow = i;
-        indices = EXCEL_DATA_COLUMNS.map(col => labels.indexOf(col));
+        indices = Object.fromEntries(EXCEL_DATA_COLUMNS.map(col => [col, labels.indexOf(col)]));
         break;
       }
     }
-    if (headerRow < 0) throw new Error("필요한 열을 찾지 못했습니다: " + EXCEL_DATA_COLUMNS.join(" | "));
+    if (headerRow < 0) throw new Error("필요한 열을 찾지 못했습니다: " + EXCEL_REQUIRED_COLUMNS.join(" | "));
 
     loadedExcelRows = [];
     for (let r = headerRow + 1; r < grid.length; r++) {
       const raw = grid[r] || [];
       const row = {};
-      EXCEL_DATA_COLUMNS.forEach((col, i) => row[col] = String(raw[indices[i]] ?? "").trim());
+      EXCEL_DATA_COLUMNS.forEach(col => {
+        const idx = indices[col];
+        row[col] = idx >= 0 ? String(raw[idx] ?? "").trim() : "";
+      });
       if (!EXCEL_DATA_COLUMNS.some(col => row[col])) continue;
       // 양식 2행의 [예시] 행은 로컬/웹 일괄 생성 규칙과 동일하게 제외
       if (r === headerRow + 1 && String(row["시즌"]).startsWith("[예시]")) continue;
@@ -1409,7 +1477,7 @@ async function loadExcelDataPanel(event) {
     renderExcelDataHead();
     renderExcelDataBody();
     $("excelDataHint").textContent =
-      `${file.name} · ${loadedExcelRows.length}행 불러옴 · 열 제목 클릭=정렬 / 한 번 클릭=설정 적용 / 더블클릭=제작 완료 토글`;
+      `${file.name} · ${loadedExcelRows.length}행 불러옴 · 한 번 클릭=설정+사진 미리보기 / 더블클릭=제작 완료 토글`;
     updateExcelDataStatus(`엑셀 데이터 ${loadedExcelRows.length}행을 불러왔습니다. 적용할 행을 클릭하세요.`);
   } catch (error) {
     loadedExcelRows = [];
