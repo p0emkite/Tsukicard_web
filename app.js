@@ -51,7 +51,7 @@ let currentSubjectAnalysis = null;
 const AUTO_FACE_TARGET = { x: 0.50, width: 0.212 };
 // 피사체 최상단을 좌측 상단 RKBO 원형 로고의 최하단 높이에 맞춘다.
 // 기준 캔버스 800×1200에서 약 y=198.
-const AUTO_SUBJECT_TOP_TARGET_RATIO = 182 / 1200;
+const AUTO_SUBJECT_TOP_TARGET_RATIO = 145 / 1200;
 
 const CUTOUT_CONFIG = {
   model: "isnet",
@@ -474,9 +474,10 @@ function autoPlaceSubject(mode = "align") {
   const scale = baseScale * Math.max(0.1, zoom / 100);
   const dw = liveSubjectCanvas.width * scale, dh = liveSubjectCanvas.height * scale;
 
-  // 가로는 얼굴 중심을 카드 중앙에 맞춘다.
-  const targetX = native.width * AUTO_FACE_TARGET.x;
-  const desiredLeft = targetX - (face.x + face.width / 2) * scale;
+  // 가로는 추정 얼굴 중심이 아니라 "피사체 전체"의 중심을
+  // 미리보기 50% 가이드(카드 정중앙)에 정확히 맞춘다.
+  const targetX = native.width / 2;
+  const desiredLeft = targetX - dw / 2;
 
   // 세로는 얼굴 중심이 아니라 피사체의 맨 윗부분을 기준으로 맞춘다.
   // liveSubjectCanvas는 알파 bbox로 이미 잘려 있어 y=0이 곧 피사체 최상단이다.
@@ -492,8 +493,8 @@ function autoPlaceSubject(mode = "align") {
   scheduleFinalPreview(0);
   setStatus(
     mode === "size"
-      ? `인물 크기를 기준 크기로 맞추고 피사체 상단을 RKBO 로고 하단 높이에 정렬했습니다. (${currentSubjectAnalysis.faceMode})`
-      : `피사체 상단을 RKBO 로고 하단 높이에 정렬했습니다. (${currentSubjectAnalysis.faceMode})`,
+      ? `인물 크기를 기준 크기로 맞추고 피사체를 중앙 가이드에 정렬한 뒤 상단을 더 높였습니다. (${currentSubjectAnalysis.faceMode})`
+      : `피사체를 중앙 가이드에 정렬하고 상단을 더 높였습니다. (${currentSubjectAnalysis.faceMode})`,
     false, true
   );
 }
