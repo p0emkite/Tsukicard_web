@@ -344,3 +344,7 @@ footer{text-align:center;color:var(--muted);font-size:12px;padding:0 24px 32px}
   text-align:left;
   min-width:170px;
 }
+
+.excel-data-table tbody tr.warning:not(.done) td:first-child{
+  box-shadow:inset 4px 0 0 #e0a100;
+}
