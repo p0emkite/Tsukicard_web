@@ -51,9 +51,10 @@
           <div class="inline-options"><label class="check"><input id="glowCheck" type="checkbox" checked /> 피사체 외부 광선</label><button id="resetCropBtn" class="ghost" type="button">이미지 조정 초기화</button></div>
           <div class="button-row auto-subject-row">
             <button id="autoFaceBtn" class="secondary" type="button" disabled>얼굴 자동 정렬</button>
+            <button id="subjectCenterBtn" class="secondary" type="button" disabled>피사체 중앙 정렬</button>
             <button id="autoScaleBtn" class="secondary" type="button" disabled>인물 크기 자동 맞춤</button>
           </div>
-          <small>브라우저 얼굴 감지를 우선 사용하고, 미지원 환경에서는 누끼 실루엣 상단을 기준으로 자동 계산합니다.</small>
+          <small>얼굴 자동 정렬은 얼굴 중심, 피사체 중앙 정렬은 누끼 전체 중심을 세로 가이드에 맞춥니다. 인물 크기 자동 맞춤은 크기와 상단 높이까지 함께 보정합니다.</small>
         </div>
       </details>
 
@@ -173,6 +174,6 @@
   </div>
 
   <footer><p>렌더링은 사용자 브라우저 안에서 실행됩니다. 카드 원본 이미지는 별도 서버로 업로드하지 않습니다.</p></footer>
-  <script type="module" src="./app.js?v=20261007-6"></script>
+  <script type="module" src="./app.js?v=20261007-7"></script>
 </body>
 </html>
