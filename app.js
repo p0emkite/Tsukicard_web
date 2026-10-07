@@ -35,6 +35,8 @@ let excelDataSortDesc = false;
 let selectedExcelDataId = null;
 let excelDataFilters = Object.fromEntries(EXCEL_DATA_COLUMNS.map(col => [col, ""]));
 let saveDirectoryHandle = null;
+let excelDataImageFiles = [];
+let excelRowPreviewSeq = 0;
 
 // Browser-side realtime preview state
 const liveAssetCache = new Map();
@@ -43,6 +45,9 @@ let livePreviewRaf = 0;
 let finalPreviewTimer = null;
 let liveFontsReady = null;
 let liveInteractionActive = false;
+let liveSubjectMeta = null;
+let currentSubjectAnalysis = null;
+const AUTO_FACE_TARGET = { x: 0.50, y: 0.31, width: 0.245 };
 
 const CUTOUT_CONFIG = {
   model: "isnet",
@@ -252,6 +257,9 @@ function loadLiveImage(path) {
 async function prepareLiveSubject(blob) {
   if (!blob) {
     liveSubjectCanvas = null;
+    liveSubjectMeta = null;
+    currentSubjectAnalysis = null;
+    updateSubjectQualityUi();
     return;
   }
   const bitmap = await createImageBitmap(blob);
@@ -262,12 +270,17 @@ async function prepareLiveSubject(blob) {
   tctx.drawImage(bitmap, 0, 0);
 
   let sx = 0, sy = 0, sw = temp.width, sh = temp.height;
+  let foregroundCount = 0, semiTransparentCount = 0, transparentCount = 0;
+  let minX = temp.width, minY = temp.height, maxX = -1, maxY = -1;
   try {
     const pixels = tctx.getImageData(0, 0, temp.width, temp.height).data;
-    let minX = temp.width, minY = temp.height, maxX = -1, maxY = -1;
     for (let y = 0; y < temp.height; y++) {
       for (let x = 0; x < temp.width; x++) {
-        if (pixels[(y * temp.width + x) * 4 + 3] > 0) {
+        const alpha = pixels[(y * temp.width + x) * 4 + 3];
+        if (alpha < 250) transparentCount++;
+        if (alpha > 12) {
+          foregroundCount++;
+          if (alpha < 245) semiTransparentCount++;
           if (x < minX) minX = x;
           if (y < minY) minY = y;
           if (x > maxX) maxX = x;
@@ -280,12 +293,199 @@ async function prepareLiveSubject(blob) {
     }
   } catch (_) {}
 
+  const totalPixels = Math.max(1, temp.width * temp.height);
+  const bboxPixels = Math.max(1, sw * sh);
+  const hasCutout = transparentCount / totalPixels > 0.02;
+  liveSubjectMeta = {
+    sourceWidth: temp.width, sourceHeight: temp.height,
+    cropX: sx, cropY: sy, cropWidth: sw, cropHeight: sh,
+    hasCutout,
+    foregroundAreaRatio: foregroundCount / totalPixels,
+    fillRatio: foregroundCount / bboxPixels,
+    semiTransparentRatio: foregroundCount ? semiTransparentCount / foregroundCount : 0,
+    touchesTop: sy <= 2,
+    touchesLeft: sx <= 2,
+    touchesRight: sx + sw >= temp.width - 2,
+    touchesBottom: sy + sh >= temp.height - 2,
+  };
+
   const out = document.createElement("canvas");
   out.width = sw;
   out.height = sh;
   out.getContext("2d").drawImage(temp, sx, sy, sw, sh, 0, 0, sw, sh);
-  bitmap.close?.();
   liveSubjectCanvas = out;
+  currentSubjectAnalysis = await analyzeSubjectCanvas(temp, out, liveSubjectMeta);
+  updateSubjectQualityUi();
+  bitmap.close?.();
+}
+
+function median(values) {
+  if (!values.length) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+async function detectNativeFace(sourceCanvas, meta) {
+  if (typeof FaceDetector === "undefined") return null;
+  try {
+    const detector = new FaceDetector({ fastMode: true, maxDetectedFaces: 5 });
+    const faces = await detector.detect(sourceCanvas);
+    if (!faces?.length) return null;
+    const face = [...faces].sort((a, b) =>
+      (b.boundingBox.width * b.boundingBox.height) - (a.boundingBox.width * a.boundingBox.height)
+    )[0];
+    const b = face.boundingBox;
+    const x = clamp(b.x - meta.cropX, 0, meta.cropWidth - 1);
+    const y = clamp(b.y - meta.cropY, 0, meta.cropHeight - 1);
+    const width = clamp(b.width, 1, meta.cropWidth - x);
+    const height = clamp(b.height, 1, meta.cropHeight - y);
+    return { x, y, width, height, source: "native" };
+  } catch (error) {
+    console.warn("브라우저 얼굴 감지 실패, 실루엣 기준으로 전환:", error);
+    return null;
+  }
+}
+
+function estimateFaceFromSubject(canvas, meta) {
+  const w = canvas.width, h = canvas.height;
+  if (!w || !h) return null;
+
+  if (!meta?.hasCutout) {
+    const width = w * 0.26;
+    return { x: w * 0.5 - width / 2, y: h * 0.12, width, height: width * 1.2, source: "heuristic" };
+  }
+
+  try {
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    const data = ctx.getImageData(0, 0, w, h).data;
+    const rowInfo = [];
+    const minCount = Math.max(3, Math.round(w * 0.012));
+    let firstY = -1;
+
+    for (let y = 0; y < Math.min(h, Math.round(h * 0.42)); y++) {
+      let minX = w, maxX = -1, count = 0;
+      for (let x = 0; x < w; x++) {
+        if (data[(y * w + x) * 4 + 3] > 40) {
+          count++;
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+        }
+      }
+      if (count >= minCount) {
+        if (firstY < 0) firstY = y;
+        rowInfo.push({ y, width: maxX - minX + 1, center: (minX + maxX) / 2 });
+      }
+    }
+
+    if (firstY >= 0) {
+      const endY = firstY + Math.max(8, Math.round(h * 0.16));
+      const headRows = rowInfo.filter(r => r.y <= endY && r.width > 2);
+      if (headRows.length) {
+        const width = clamp(median(headRows.map(r => r.width)) * 0.74, w * 0.08, w * 0.48);
+        const height = width * 1.22;
+        const cx = median(headRows.map(r => r.center)) || w / 2;
+        return {
+          x: clamp(cx - width / 2, 0, Math.max(0, w - width)),
+          y: clamp(firstY + width * 0.08, 0, Math.max(0, h - height)),
+          width, height, source: "heuristic",
+        };
+      }
+    }
+  } catch (error) {
+    console.warn("실루엣 얼굴 추정 실패:", error);
+  }
+
+  const width = w * 0.24;
+  return { x: w * 0.5 - width / 2, y: h * 0.08, width, height: width * 1.22, source: "heuristic" };
+}
+
+async function analyzeSubjectCanvas(sourceCanvas, croppedCanvas, meta) {
+  const faceBox = await detectNativeFace(sourceCanvas, meta) || estimateFaceFromSubject(croppedCanvas, meta);
+  const warnings = [];
+
+  if (faceBox) {
+    const faceSourceWidthRatio = faceBox.width / Math.max(1, meta.cropWidth);
+    const faceOriginalWidthRatio = faceBox.width / Math.max(1, meta.sourceWidth);
+    if (faceOriginalWidthRatio < 0.075 || faceSourceWidthRatio < 0.09) warnings.push("얼굴이 원본에서 작음");
+    if (faceBox.y <= 2 || faceBox.x <= 2 || faceBox.x + faceBox.width >= meta.cropWidth - 2) warnings.push("얼굴 잘림 가능성");
+  } else {
+    warnings.push("얼굴 위치를 추정하지 못함");
+  }
+
+  if (meta.hasCutout) {
+    if (meta.touchesTop || meta.touchesLeft || meta.touchesRight) warnings.push("피사체가 원본 가장자리에 닿음");
+    if (meta.fillRatio < 0.16) warnings.push("누끼 일부 누락 가능성");
+    else if (meta.semiTransparentRatio > 0.30) warnings.push("누끼 가장자리 검수 권장");
+  }
+
+  return {
+    faceBox,
+    warnings: [...new Set(warnings)],
+    faceMode: faceBox?.source === "native" ? "얼굴 감지" : "실루엣 추정",
+    hasCutout: !!meta.hasCutout,
+  };
+}
+
+function updateSubjectQualityUi() {
+  const box = $("subjectQuality");
+  if (!box) return;
+  if (!currentWorkingBlob || !currentSubjectAnalysis) {
+    box.className = "subject-quality info";
+    box.textContent = "자동 점검: 이미지를 선택하면 얼굴 크기 · 잘림 · 누끼 상태를 확인합니다.";
+    return;
+  }
+  const analysis = currentSubjectAnalysis;
+  if (!analysis.warnings.length) {
+    box.className = "subject-quality ok";
+    box.textContent = `자동 점검: 양호 · ${analysis.faceMode}${analysis.hasCutout ? " · 투명 누끼 확인" : ""}`;
+    return;
+  }
+  box.className = "subject-quality warning";
+  box.textContent = `자동 점검: ⚠ ${analysis.warnings.join(" · ")} · ${analysis.faceMode}`;
+}
+
+function autoPlaceSubject(mode = "align") {
+  if (!liveSubjectCanvas || !currentSubjectAnalysis?.faceBox) {
+    setStatus("자동 배치에 사용할 얼굴/피사체 정보를 찾지 못했습니다.", true);
+    return;
+  }
+  const tpl = currentTemplate();
+  if (!tpl) return;
+  const native = tpl.native_canvas || { width: 800, height: 1200 };
+  const box = tpl.subject_box || { x: 0, y: 0, width: native.width, height: native.height };
+  const face = currentSubjectAnalysis.faceBox;
+  const baseScale = Math.min(
+    box.width / Math.max(1, liveSubjectCanvas.width),
+    box.height / Math.max(1, liveSubjectCanvas.height)
+  );
+
+  let zoom = numValue("zoomNumber", 100);
+  if (mode === "size") {
+    const targetFaceWidth = native.width * AUTO_FACE_TARGET.width;
+    zoom = clamp((targetFaceWidth / Math.max(1, face.width * baseScale)) * 100, 40, 500);
+    setLinkedRange("zoom", Number(zoom.toFixed(1)));
+  }
+
+  const scale = baseScale * Math.max(0.1, zoom / 100);
+  const dw = liveSubjectCanvas.width * scale, dh = liveSubjectCanvas.height * scale;
+  const targetX = native.width * AUTO_FACE_TARGET.x, targetY = native.height * AUTO_FACE_TARGET.y;
+  const desiredLeft = targetX - (face.x + face.width / 2) * scale;
+  const desiredTop = targetY - (face.y + face.height / 2) * scale;
+  const denomX = box.width - dw, denomY = box.height - dh;
+  const focusX = Math.abs(denomX) < 0.001 ? 50 : ((desiredLeft - box.x) / denomX) * 100;
+  const focusY = Math.abs(denomY) < 0.001 ? 50 : ((desiredTop - box.y) / denomY) * 100;
+
+  setLinkedRange("focusX", Number(clamp(focusX, -1000, 1000).toFixed(1)));
+  setLinkedRange("focusY", Number(clamp(focusY, -1000, 1000).toFixed(1)));
+  queueLivePreview();
+  scheduleFinalPreview(0);
+  setStatus(
+    mode === "size"
+      ? `인물 크기와 얼굴 위치를 자동 보정했습니다. (${currentSubjectAnalysis.faceMode})`
+      : `얼굴 위치를 자동 정렬했습니다. (${currentSubjectAnalysis.faceMode})`,
+    false, true
+  );
 }
 
 async function warmLivePreviewAssets() {
@@ -618,6 +818,8 @@ async function setWorkingPhoto(blob, label = "이미지") {
   await prepareLiveSubject(blob);
   await warmLivePreviewAssets();
   $("cutoutBtn").disabled = false;
+  $("autoFaceBtn").disabled = false;
+  $("autoScaleBtn").disabled = false;
   $("restorePhotoBtn").disabled = !currentOriginalFile || blob === currentOriginalFile;
   $("generateBtn").disabled = false;
   $("previewHint").textContent = label;
@@ -871,6 +1073,8 @@ function bindInputs() {
     $("restorePhotoBtn").disabled = true;
   });
   $("cutoutBtn").addEventListener("click", doCutout);
+  $("autoFaceBtn").addEventListener("click", () => autoPlaceSubject("align"));
+  $("autoScaleBtn").addEventListener("click", () => autoPlaceSubject("size"));
   $("generateBtn").addEventListener("click", generateAndDownload);
   const savePathBtn = $("savePathBtn");
   if (savePathBtn) savePathBtn.addEventListener("click", chooseSaveDirectory);
