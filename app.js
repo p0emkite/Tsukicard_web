@@ -1207,9 +1207,10 @@ function renderExcelDataBody() {
   body.innerHTML = visibleRows.map(item => {
     const cls = [
       item.done ? "done" : "",
+      item.warning ? "warning" : "",
       item.id === selectedExcelDataId ? "selected" : "",
     ].filter(Boolean).join(" ");
-    return `<tr data-id="${item.id}" class="${cls}">
+    return `<tr data-id="${item.id}" class="${cls}" title="${escapeHtml(item.warning || "")}">
       ${EXCEL_DATA_COLUMNS.map(col => `<td data-col="${escapeHtml(col)}">${escapeHtml(item.row[col] ?? "")}</td>`).join("")}
     </tr>`;
   }).join("");
