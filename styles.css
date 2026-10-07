@@ -314,3 +314,33 @@ footer{text-align:center;color:var(--muted);font-size:12px;padding:0 24px 32px}
 .save-box #savePathBtn{
   white-space:nowrap;
 }
+
+
+/* Automatic subject placement + photo QA */
+.auto-subject-row{margin-top:10px}
+.auto-subject-row button{flex:1;min-width:150px}
+.subject-quality{
+  margin:-6px 0 16px;
+  padding:10px 12px;
+  border:1px solid var(--line);
+  border-radius:10px;
+  font-size:12px;
+  line-height:1.5;
+  background:#f7f8fa;
+  color:#58616c;
+}
+.subject-quality.ok{
+  background:#ebf7f1;
+  border-color:#cfeadc;
+  color:var(--ok);
+}
+.subject-quality.warning{
+  background:#fff7e8;
+  border-color:#f1d59a;
+  color:#7a5700;
+}
+.excel-data-table th[data-col="이미지명"],
+.excel-data-table td[data-col="이미지명"]{
+  text-align:left;
+  min-width:170px;
+}
