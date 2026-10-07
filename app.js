@@ -49,8 +49,8 @@ let liveInteractionActive = false;
 let liveSubjectMeta = null;
 let currentSubjectAnalysis = null;
 const AUTO_FACE_TARGET = { x: 0.50, width: 0.212 };
-// 피사체 최상단을 좌측 상단 RKBO 원형 로고의 최하단 높이에 맞춘다.
-// 기준 캔버스 800×1200에서 약 y=198.
+// 인물 크기 자동 맞춤에서 사용할 피사체 최상단 목표 높이.
+// 기준 캔버스 800×1200에서 y=145.
 const AUTO_SUBJECT_TOP_TARGET_RATIO = 145 / 1200;
 
 const CUTOUT_CONFIG = {
@@ -449,54 +449,87 @@ function updateSubjectQualityUi() {
   box.textContent = `자동 점검: ⚠ ${analysis.warnings.join(" · ")} · ${analysis.faceMode}`;
 }
 
-function autoPlaceSubject(mode = "align") {
+function autoPlaceSubject(mode = "face") {
   if (!liveSubjectCanvas || !currentSubjectAnalysis?.faceBox) {
     setStatus("자동 배치에 사용할 얼굴/피사체 정보를 찾지 못했습니다.", true);
     return;
   }
+
   const tpl = currentTemplate();
   if (!tpl) return;
+
   const native = tpl.native_canvas || { width: 800, height: 1200 };
   const box = tpl.subject_box || { x: 0, y: 0, width: native.width, height: native.height };
   const face = currentSubjectAnalysis.faceBox;
+
   const baseScale = Math.min(
     box.width / Math.max(1, liveSubjectCanvas.width),
     box.height / Math.max(1, liveSubjectCanvas.height)
   );
 
   let zoom = numValue("zoomNumber", 100);
+
+  // "인물 크기 자동 맞춤"에서만 얼굴 목표 크기에 맞춰 zoom을 변경한다.
   if (mode === "size") {
     const targetFaceWidth = native.width * AUTO_FACE_TARGET.width;
-    zoom = clamp((targetFaceWidth / Math.max(1, face.width * baseScale)) * 100, 40, 500);
+    zoom = clamp(
+      (targetFaceWidth / Math.max(1, face.width * baseScale)) * 100,
+      40,
+      500
+    );
     setLinkedRange("zoom", Number(zoom.toFixed(1)));
   }
 
   const scale = baseScale * Math.max(0.1, zoom / 100);
-  const dw = liveSubjectCanvas.width * scale, dh = liveSubjectCanvas.height * scale;
+  const dw = liveSubjectCanvas.width * scale;
+  const dh = liveSubjectCanvas.height * scale;
 
-  // 가로는 추정 얼굴 중심이 아니라 "피사체 전체"의 중심을
-  // 미리보기 50% 가이드(카드 정중앙)에 정확히 맞춘다.
-  const targetX = native.width / 2;
-  const desiredLeft = targetX - dw / 2;
+  // 세로 위치를 건드리지 않는 모드에서 현재 위치를 그대로 보존한다.
+  const currentFocusY = numValue("focusYNumber", 50);
+  const currentTop = box.y + (box.height - dh) * (currentFocusY / 100);
 
-  // 세로는 얼굴 중심이 아니라 피사체의 맨 윗부분을 기준으로 맞춘다.
-  // liveSubjectCanvas는 알파 bbox로 이미 잘려 있어 y=0이 곧 피사체 최상단이다.
-  const desiredTop = native.height * AUTO_SUBJECT_TOP_TARGET_RATIO;
+  let desiredLeft;
+  let desiredTop = currentTop;
 
-  const denomX = box.width - dw, denomY = box.height - dh;
-  const focusX = Math.abs(denomX) < 0.001 ? 50 : ((desiredLeft - box.x) / denomX) * 100;
-  const focusY = Math.abs(denomY) < 0.001 ? 50 : ((desiredTop - box.y) / denomY) * 100;
+  if (mode === "subject") {
+    // 누끼된 피사체 전체의 중심을 카드의 50% 세로 가이드에 맞춘다.
+    desiredLeft = native.width / 2 - dw / 2;
+  } else {
+    // 얼굴 자동 정렬 / 인물 크기 자동 맞춤:
+    // 추정된 얼굴 중심을 카드의 50% 세로 가이드에 맞춘다.
+    const faceCenterX = (face.x + face.width / 2) * scale;
+    desiredLeft = native.width * AUTO_FACE_TARGET.x - faceCenterX;
+
+    if (mode === "size") {
+      // 크기 자동 맞춤일 때만 피사체 최상단도 목표 높이로 올린다.
+      desiredTop = native.height * AUTO_SUBJECT_TOP_TARGET_RATIO;
+    }
+  }
+
+  const denomX = box.width - dw;
+  const denomY = box.height - dh;
+
+  const focusX = Math.abs(denomX) < 0.001
+    ? 50
+    : ((desiredLeft - box.x) / denomX) * 100;
+  const focusY = Math.abs(denomY) < 0.001
+    ? 50
+    : ((desiredTop - box.y) / denomY) * 100;
 
   setLinkedRange("focusX", Number(clamp(focusX, -1000, 1000).toFixed(1)));
   setLinkedRange("focusY", Number(clamp(focusY, -1000, 1000).toFixed(1)));
+
   queueLivePreview();
   scheduleFinalPreview(0);
-  setStatus(
-    mode === "size"
-      ? `인물 크기를 기준 크기로 맞추고 피사체를 중앙 가이드에 정렬한 뒤 상단을 더 높였습니다. (${currentSubjectAnalysis.faceMode})`
-      : `피사체를 중앙 가이드에 정렬하고 상단을 더 높였습니다. (${currentSubjectAnalysis.faceMode})`,
-    false, true
-  );
+
+  const message =
+    mode === "subject"
+      ? "피사체 전체 중심을 중앙 가이드에 정렬했습니다."
+      : mode === "size"
+        ? `인물 크기를 맞추고 얼굴 중심을 중앙 가이드에 정렬한 뒤 상단 높이도 맞췄습니다. (${currentSubjectAnalysis.faceMode})`
+        : `얼굴 중심을 중앙 가이드에 정렬했습니다. (${currentSubjectAnalysis.faceMode})`;
+
+  setStatus(message, false, true);
 }
 
 async function warmLivePreviewAssets() {
@@ -830,6 +863,7 @@ async function setWorkingPhoto(blob, label = "이미지") {
   await warmLivePreviewAssets();
   $("cutoutBtn").disabled = false;
   $("autoFaceBtn").disabled = false;
+  $("subjectCenterBtn").disabled = false;
   $("autoScaleBtn").disabled = false;
   $("restorePhotoBtn").disabled = !currentOriginalFile || blob === currentOriginalFile;
   $("generateBtn").disabled = false;
@@ -1084,7 +1118,8 @@ function bindInputs() {
     $("restorePhotoBtn").disabled = true;
   });
   $("cutoutBtn").addEventListener("click", doCutout);
-  $("autoFaceBtn").addEventListener("click", () => autoPlaceSubject("align"));
+  $("autoFaceBtn").addEventListener("click", () => autoPlaceSubject("face"));
+  $("subjectCenterBtn").addEventListener("click", () => autoPlaceSubject("subject"));
   $("autoScaleBtn").addEventListener("click", () => autoPlaceSubject("size"));
   $("generateBtn").addEventListener("click", generateAndDownload);
   const savePathBtn = $("savePathBtn");
