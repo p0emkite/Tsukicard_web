@@ -318,7 +318,7 @@ footer{text-align:center;color:var(--muted);font-size:12px;padding:0 24px 32px}
 
 /* Automatic subject placement + photo QA */
 .auto-subject-row{margin-top:10px}
-.auto-subject-row button{flex:1;min-width:150px}
+.auto-subject-row button{flex:1;min-width:110px}
 .subject-quality{
   margin:-6px 0 16px;
   padding:10px 12px;
